@@ -80,6 +80,17 @@ credentials.json
 *.truststore
 
 # ==========================================
+# Distribuição e instaladores (jpackage / releases)
+# ==========================================
+dist/
+releases/
+*.exe
+*.msi
+*.pcapng
+*.pcap
+devices.properties
+
+# ==========================================
 # Sistema Operacional (Windows / macOS)
 # ==========================================
 Thumbs.db

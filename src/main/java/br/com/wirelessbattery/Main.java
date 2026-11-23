@@ -1,6 +1,9 @@
 package br.com.wirelessbattery;
 
 import br.com.wirelessbattery.config.AppSettings;
+import br.com.wirelessbattery.config.AppVersion;
+import br.com.wirelessbattery.config.SingleInstanceGuard;
+import br.com.wirelessbattery.config.WindowsStartupManager;
 import br.com.wirelessbattery.device.AkkoVergeS9;
 import br.com.wirelessbattery.device.AkkoVergeS9Config;
 import br.com.wirelessbattery.device.DeluxM800Pro;
@@ -28,6 +31,14 @@ public final class Main {
     public static void main(String[] args) {
         boolean argMinimized = Arrays.stream(args).anyMatch(a -> "--minimized".equalsIgnoreCase(a));
 
+        SingleInstanceGuard instanceGuard = new SingleInstanceGuard();
+        if (!instanceGuard.tryAcquireOrSignalExisting(!argMinimized)) {
+            AppLogger duplicateLogger = new AppLogger();
+            duplicateLogger.info("[STARTUP] Inicialização ignorada: " + instanceGuard.getLastDiagnosticMessage());
+            System.exit(0);
+            return;
+        }
+
         AppSettings settings = new AppSettings();
         settings.load();
 
@@ -38,6 +49,10 @@ public final class Main {
 
         SwingUtilities.invokeLater(() -> {
             AppLogger logger = new AppLogger();
+            logger.info("Iniciando Wireless Device Battery Monitor | " + AppVersion.formatStartupInfo());
+            logger.info("[STARTUP] " + instanceGuard.getLastDiagnosticMessage());
+            WindowsStartupManager.reconcileStartupSetting(settings, logger);
+
             HidServiceProvider hidProvider = new HidServiceProvider(logger);
             DeviceManager deviceManager = new DeviceManager(hidProvider, logger);
             SimulationManager simulationManager = new SimulationManager(logger);
@@ -61,14 +76,14 @@ public final class Main {
                     () -> new DeluxM800Pro(hidProvider, m800Config, logger)
             ));
 
-            // 2. Headset: Akko Verge S9
+            // 2. Headset: Akko S9 Ultra / Verge S9
             deviceManager.registerDriver(new DeviceDriverRegistry.DriverRegistration(
                     AkkoVergeS9.DEVICE_ID,
                     AkkoVergeS9.DISPLAY_NAME,
                     2,
                     false,
-                    false,
-                    -1,
+                    true,
+                    akkoConfig.getInterfaceNumber(),
                     akkoConfig::matches,
                     () -> new AkkoVergeS9(hidProvider, akkoConfig, logger)
             ));
@@ -85,7 +100,7 @@ public final class Main {
                     () -> new GameSirCyclone2(hidProvider, cyclone2Config, logger)
             ));
 
-            logger.info("Drivers registrados: Delux M800 Pro, Akko Verge S9 e GameSir Cyclone 2.");
+            logger.info("Drivers registrados: Delux M800 Pro, Akko S9 Ultra e GameSir Cyclone 2.");
 
             MainWindow window = new MainWindow(
                     settings,
@@ -97,17 +112,19 @@ public final class Main {
                     () -> {
                         deviceManager.close();
                         hidProvider.close();
+                        instanceGuard.close();
                         System.exit(0);
                     }
             );
+            instanceGuard.startActivateListener(window::bringToFront);
+            deviceManager.startPolling(settings.getPollIntervalSeconds());
 
             boolean startMinimized = argMinimized || settings.isStartMinimized();
             if (!startMinimized) {
                 window.setVisible(true);
             } else {
-                logger.info("Iniciado minimizado conforme preferência do usuário.");
+                window.startMinimizedSession(argMinimized);
             }
-            deviceManager.startPolling(settings.getPollIntervalSeconds());
         });
     }
 }

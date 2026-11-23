@@ -13,8 +13,27 @@ public record HidDeviceInfo(
         String product,
         String serialNumber,
         String path,
-        String identificationStatus
+        String identificationStatus,
+        int inputReportLength,
+        int outputReportLength,
+        int featureReportLength
 ) {
+    public HidDeviceInfo(
+            int vendorId,
+            int productId,
+            int interfaceNumber,
+            int usagePage,
+            int usage,
+            String manufacturer,
+            String product,
+            String serialNumber,
+            String path,
+            String identificationStatus
+    ) {
+        this(vendorId, productId, interfaceNumber, usagePage, usage,
+                manufacturer, product, serialNumber, path, identificationStatus,
+                -1, -1, -1);
+    }
     public String formatVid() {
         return String.format("0x%04X", vendorId & 0xFFFF);
     }
@@ -33,6 +52,13 @@ public record HidDeviceInfo(
 
     public String formatUsage() {
         return String.format("0x%04X", usage & 0xFFFF);
+    }
+
+    public String formatReportCaps() {
+        if (inputReportLength < 0 || outputReportLength < 0 || featureReportLength < 0) {
+            return "--";
+        }
+        return "In=" + inputReportLength + "/Out=" + outputReportLength + "/Feat=" + featureReportLength;
     }
 
     public String safeManufacturer() {

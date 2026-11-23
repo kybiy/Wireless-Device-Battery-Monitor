@@ -25,6 +25,16 @@ class GameSirCyclone2ProtocolTest {
     }
 
     @Test
+    void detectsIdleDongle0x12ReportAsAsleepAndNotZeroPercentBattery() {
+        byte[] idleReport = new byte[64];
+        idleReport[0] = 0x12;
+        idleReport[63] = (byte) 0xCC;
+
+        assertTrue(GameSirCyclone2Protocol.isIdleDongleReport(idleReport, 64));
+        assertNull(GameSirCyclone2Protocol.parseInputReport(idleReport, 64));
+    }
+
+    @Test
     void parsesValidInputReport12WithBatteryAndChargingFlag() {
         byte[] report = new byte[64];
         report[0] = 0x12;
@@ -68,10 +78,19 @@ class GameSirCyclone2ProtocolTest {
     void configMatchesOnlyCyclone2IdsAndNotNovaLine() {
         GameSirCyclone2Config cfg = GameSirCyclone2Config.defaultReference();
         assertTrue(cfg.matchesActive(0x3537, 0x100B));
+        assertTrue(cfg.matchesActive(0x3537, 0x102A));
+        assertTrue(cfg.matchesActive(0x3537, 0x1053));
+        assertTrue(cfg.matchesActive(0x3537, 0x101D));
+        assertTrue(cfg.isWiredPid(0x1053));
+        assertTrue(cfg.isWiredPid(0x101D));
+        assertFalse(cfg.isWiredPid(0x100B));
+
         assertTrue(cfg.matchesIdleReceiver(0x3537, 0x0575));
         assertTrue(cfg.matchesAny(0x3537, 0x100B));
         assertTrue(cfg.matchesAny(0x3537, 0x0575));
         assertTrue(cfg.matchesCollection(0x3537, 0x100B, 0xFFF0, 0x0040));
+        assertTrue(cfg.matchesCollection(0x3537, 0x1053, 0xFFF0, 0x0040));
+        assertTrue(cfg.matchesIdleCollection(0x3537, 0x0575, 0xFFF0, 0x0040));
         assertFalse(cfg.matchesCollection(0x3537, 0x100B, 0xFF7A, 0x0001));
 
         // Não confundir com GameSir Nova / Nova 2 / Nova 2 Lite

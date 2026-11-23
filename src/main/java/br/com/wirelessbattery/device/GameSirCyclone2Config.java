@@ -9,12 +9,15 @@ import java.util.Properties;
 /**
  * Configuração dos identificadores HID do controle GameSir Cyclone 2.
  *
- * Valores baseados diretamente no driver C++ {@code PollGameSirCyclone}
- * ({@code src/drivers/gamesir.cpp} do repositório de referência, protocolo
- * {@code cyclone2-linux}):
- * - VID: 0x3537
- * - PID ativo (2.4 GHz linkado ou cabo USB em modo XInput): 0x100B
- * - PID receptor ocioso (dongle 2.4 GHz sem controle ligado): 0x0575
+ * Valores confirmados nos repositórios de referência ({@code pedrosegato/gamesir-reverse-engineering}
+ * e {@code vdemonchy/cyclone2-linux}):
+ * - VID: 0x3537 (GameSir)
+ * - PIDs ativos (modo XInput, respondem na coleção FFF0:0040):
+ *   - 0x100B: receptor 2.4 GHz com controle pareado
+ *   - 0x102A: receptor 2.4 GHz (variante wireless)
+ *   - 0x1053: cabo USB (firmware 3.x)
+ *   - 0x101D: cabo USB (firmware 1.x)
+ * - PID receptor ocioso / modo HID: 0x0575 (dongle sem controle ligado ou em modo HID)
  * - Coleção HID proprietária: Usage Page 0xFFF0, Usage 0x0040
  *
  * Os valores permanecem configuráveis via {@code devices.properties} ou propriedades {@code -D}.
@@ -22,10 +25,14 @@ import java.util.Properties;
 public final class GameSirCyclone2Config {
     public static final int DEFAULT_VENDOR_ID = 0x3537;
     public static final int DEFAULT_ACTIVE_PID = 0x100B;
+    public static final int DEFAULT_WIRELESS_ALT_PID = 0x102A;
+    public static final int DEFAULT_WIRED_PID = 0x1053;
+    public static final int DEFAULT_WIRED_LEGACY_PID = 0x101D;
     public static final int DEFAULT_IDLE_RECEIVER_PID = 0x0575;
     public static final int DEFAULT_USAGE_PAGE = 0xFFF0;
     public static final int DEFAULT_USAGE = 0x0040;
     public static final int DEFAULT_READ_TIMEOUT_MS = 1500;
+    public static final int IDLE_PROBE_TIMEOUT_MS = 600;
 
     private final int vendorId;
     private final int activeProductId;
@@ -114,7 +121,19 @@ public final class GameSirCyclone2Config {
     }
 
     public boolean matchesActive(int vid, int pid) {
-        return (vid & 0xFFFF) == vendorId && (pid & 0xFFFF) == activeProductId;
+        if ((vid & 0xFFFF) != vendorId) {
+            return false;
+        }
+        int p = pid & 0xFFFF;
+        return p == activeProductId
+                || p == DEFAULT_WIRELESS_ALT_PID
+                || p == DEFAULT_WIRED_PID
+                || p == DEFAULT_WIRED_LEGACY_PID;
+    }
+
+    public boolean isWiredPid(int pid) {
+        int p = pid & 0xFFFF;
+        return p == DEFAULT_WIRED_PID || p == DEFAULT_WIRED_LEGACY_PID;
     }
 
     public boolean matchesIdleReceiver(int vid, int pid) {
@@ -131,10 +150,17 @@ public final class GameSirCyclone2Config {
                 && (collUsage & 0xFFFF) == (usage & 0xFFFF);
     }
 
+    public boolean matchesIdleCollection(int vid, int pid, int collUsagePage, int collUsage) {
+        return matchesIdleReceiver(vid, pid)
+                && (collUsagePage & 0xFFFF) == (usagePage & 0xFFFF)
+                && (collUsage & 0xFFFF) == (usage & 0xFFFF);
+    }
+
     public String describeIds() {
         return String.format(
-                "VID 0x%04X / PID ativo 0x%04X (ocioso 0x%04X), Usage %04X:%04X",
-                vendorId, activeProductId, idleReceiverProductId, usagePage & 0xFFFF, usage & 0xFFFF
+                "VID 0x%04X / PID ativo 0x%04X/0x%04X/0x%04X/0x%04X (ocioso 0x%04X), Usage %04X:%04X",
+                vendorId, activeProductId, DEFAULT_WIRELESS_ALT_PID, DEFAULT_WIRED_PID, DEFAULT_WIRED_LEGACY_PID,
+                idleReceiverProductId, usagePage & 0xFFFF, usage & 0xFFFF
         );
     }
 }

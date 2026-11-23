@@ -48,7 +48,7 @@ public final class SimulationManager {
         ));
         addSimulatedDevice(new SimulatedBatteryDevice(
                 SIM_AKKO_ID,
-                "Akko Verge S9",
+                "Akko S9 Ultra",
                 DeviceType.HEADSET,
                 "2.4 GHz",
                 62,

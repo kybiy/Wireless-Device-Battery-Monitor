@@ -60,6 +60,16 @@ public record DeviceReading(
         return lastKnownPercent != null;
     }
 
+    public String formattedBatteryText() {
+        if (hasBatteryPercent()) {
+            return batteryPercent + "%";
+        }
+        if (hasLastKnownPercent()) {
+            return "--% (última " + lastKnownPercent + "%)";
+        }
+        return "--%";
+    }
+
     public DeviceReading withLastKnown(Integer percent, LocalTime at) {
         return new DeviceReading(
                 deviceId,
@@ -127,20 +137,47 @@ public record DeviceReading(
             String connectionLabel,
             String detailMessage
     ) {
-        return new DeviceReading(
-                deviceId,
-                displayName,
-                deviceType,
-                null,
-                false,
-                ConnectionStatus.ASLEEP,
-                connectionLabel,
-                DataSourceType.REAL,
-                detailMessage,
-                LocalTime.now().withNano(0),
-                null,
-                null
-        );
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.ASLEEP, connectionLabel, detailMessage);
+    }
+
+    public static DeviceReading realNoResponse(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            String connectionLabel,
+            String detailMessage
+    ) {
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.NO_RESPONSE, connectionLabel, detailMessage);
+    }
+
+    public static DeviceReading realOpenFailed(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            String connectionLabel,
+            String detailMessage
+    ) {
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.OPEN_FAILED, connectionLabel, detailMessage);
+    }
+
+    public static DeviceReading realReadFailed(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            String connectionLabel,
+            String detailMessage
+    ) {
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.READ_FAILED, connectionLabel, detailMessage);
+    }
+
+    public static DeviceReading realTimeout(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            String connectionLabel,
+            String detailMessage
+    ) {
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.TIMEOUT, connectionLabel, detailMessage);
     }
 
     public static DeviceReading realDisconnected(
@@ -150,20 +187,7 @@ public record DeviceReading(
             String connectionLabel,
             String detailMessage
     ) {
-        return new DeviceReading(
-                deviceId,
-                displayName,
-                deviceType,
-                null,
-                false,
-                ConnectionStatus.DISCONNECTED,
-                connectionLabel,
-                DataSourceType.REAL,
-                detailMessage,
-                LocalTime.now().withNano(0),
-                null,
-                null
-        );
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.DISCONNECTED, connectionLabel, detailMessage);
     }
 
     public static DeviceReading realBatteryUnavailable(
@@ -173,20 +197,7 @@ public record DeviceReading(
             String connectionLabel,
             String detailMessage
     ) {
-        return new DeviceReading(
-                deviceId,
-                displayName,
-                deviceType,
-                null,
-                false,
-                ConnectionStatus.BATTERY_UNAVAILABLE,
-                connectionLabel,
-                DataSourceType.REAL,
-                detailMessage,
-                LocalTime.now().withNano(0),
-                null,
-                null
-        );
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.BATTERY_UNAVAILABLE, connectionLabel, detailMessage);
     }
 
     public static DeviceReading realPendingProtocol(
@@ -196,20 +207,7 @@ public record DeviceReading(
             String connectionLabel,
             String detailMessage
     ) {
-        return new DeviceReading(
-                deviceId,
-                displayName,
-                deviceType,
-                null,
-                false,
-                ConnectionStatus.PENDING_PROTOCOL,
-                connectionLabel,
-                DataSourceType.REAL,
-                detailMessage,
-                LocalTime.now().withNano(0),
-                null,
-                null
-        );
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.PENDING_PROTOCOL, connectionLabel, detailMessage);
     }
 
     public static DeviceReading realError(
@@ -219,13 +217,24 @@ public record DeviceReading(
             String connectionLabel,
             String detailMessage
     ) {
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.ERROR, connectionLabel, detailMessage);
+    }
+
+    private static DeviceReading realStatusOnly(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            ConnectionStatus status,
+            String connectionLabel,
+            String detailMessage
+    ) {
         return new DeviceReading(
                 deviceId,
                 displayName,
                 deviceType,
                 null,
                 false,
-                ConnectionStatus.ERROR,
+                status,
                 connectionLabel,
                 DataSourceType.REAL,
                 detailMessage,

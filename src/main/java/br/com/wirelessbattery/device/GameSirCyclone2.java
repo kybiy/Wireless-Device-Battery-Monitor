@@ -95,6 +95,22 @@ public final class GameSirCyclone2 implements BatteryDevice {
         }
     }
 
+    private enum QueryOutcomeType {
+        SUCCESS,
+        CONFIRMED_ASLEEP,
+        OPEN_FAILED,
+        WRITE_FAILED,
+        READ_FAILED,
+        TIMEOUT
+    }
+
+    private record QueryOutcome(
+            QueryOutcomeType type,
+            GameSirCyclone2Protocol.ParsedBattery battery,
+            int pid,
+            String detail
+    ) {}
+
     @Override
     public DeviceReading readBattery(List<HidDevice> attachedDevices) {
         if (attachedDevices == null || attachedDevices.isEmpty()) {
@@ -103,11 +119,12 @@ public final class GameSirCyclone2 implements BatteryDevice {
                     DISPLAY_NAME,
                     DeviceType.GAMEPAD,
                     CONNECTION,
-                    "Controle desconectado."
+                    "Controle / receptor não detectado."
             );
         }
 
         List<HidDevice> activeCollections = new ArrayList<>();
+        List<HidDevice> idleCollections = new ArrayList<>();
         boolean activePidSeen = false;
         boolean idleReceiverSeen = false;
 
@@ -121,79 +138,163 @@ public final class GameSirCyclone2 implements BatteryDevice {
                 }
             } else if (config.matchesIdleReceiver(vid, pid)) {
                 idleReceiverSeen = true;
+                if (config.matchesIdleCollection(vid, pid, d.getUsagePage(), d.getUsage())) {
+                    idleCollections.add(d);
+                }
             }
         }
 
-        if (activeCollections.isEmpty()) {
-            if (idleReceiverSeen) {
-                return DeviceReading.realAsleep(
-                        DEVICE_ID,
-                        DISPLAY_NAME,
-                        DeviceType.GAMEPAD,
-                        "2.4 GHz",
-                        "Receptor 2.4 GHz conectado; controle desligado ou em repouso."
-                );
-            }
-            if (activePidSeen) {
-                return DeviceReading.realBatteryUnavailable(
-                        DEVICE_ID,
-                        DISPLAY_NAME,
-                        DeviceType.GAMEPAD,
-                        CONNECTION,
-                        "Controle detectado sem coleção HID FFF0:0040 (verifique se está em modo XInput)."
-                );
-            }
-            return DeviceReading.realDisconnected(
+        if (!activeCollections.isEmpty()) {
+            return executeQueries(activeCollections, config.getReadTimeoutMs());
+        }
+
+        if (activePidSeen) {
+            logger.hidOperation(
+                    DISPLAY_NAME,
+                    config.getVendorId(),
+                    config.getActiveProductId(),
+                    -1,
+                    config.getUsagePage(),
+                    config.getUsage(),
+                    GameSirCyclone2Protocol.OUT_REPORT_ID & 0xFF,
+                    "selectCollection",
+                    "INDISPONIVEL",
+                    "PID ativo detectado sem coleção HID 0xFFF0:0x0040 (verifique modo XInput)",
+                    true
+            );
+            return DeviceReading.realBatteryUnavailable(
                     DEVICE_ID,
                     DISPLAY_NAME,
                     DeviceType.GAMEPAD,
                     CONNECTION,
-                    "Controle / receptor não detectado."
+                    "Controle detectado sem coleção HID FFF0:0040 (verifique se está em modo XInput)."
             );
         }
 
-        for (HidDevice candidate : activeCollections) {
-            GameSirCyclone2Protocol.ParsedBattery parsed = queryCollection(candidate);
-            if (parsed != null) {
-                String connLabel = parsed.charging() ? "USB Cabo / Carregando" : "2.4 GHz / USB";
-                String detail = "Leitura experimental via HID FFF0:0040 (aguardando confirmação em hardware real).";
-                return DeviceReading.realConnected(
-                        DEVICE_ID,
-                        DISPLAY_NAME,
-                        DeviceType.GAMEPAD,
-                        parsed.percent(),
-                        parsed.charging(),
-                        connLabel,
-                        detail
-                );
-            }
+        if (!idleCollections.isEmpty()) {
+            return executeQueries(idleCollections, GameSirCyclone2Config.IDLE_PROBE_TIMEOUT_MS);
         }
 
-        return DeviceReading.realAsleep(
+        if (idleReceiverSeen) {
+            logger.hidOperation(
+                    DISPLAY_NAME,
+                    config.getVendorId(),
+                    config.getIdleReceiverProductId(),
+                    0,
+                    0,
+                    0,
+                    null,
+                    "idleReceiverDetected",
+                    "REPOUSO_CONFIRMADO",
+                    "Receptor 0x3537:0x0575 sem coleção ativa (controle desligado)",
+                    false
+            );
+            return DeviceReading.realAsleep(
+                    DEVICE_ID,
+                    DISPLAY_NAME,
+                    DeviceType.GAMEPAD,
+                    "2.4 GHz",
+                    "Receptor 2.4 GHz ocioso (0x3537:0x0575) — controle desligado ou em repouso."
+            );
+        }
+
+        return DeviceReading.realDisconnected(
                 DEVICE_ID,
                 DISPLAY_NAME,
                 DeviceType.GAMEPAD,
                 CONNECTION,
-                "Coleção FFF0:0040 detectada, sem resposta de bateria no momento (em repouso ou acesso reservado)."
+                "Controle / receptor não detectado."
         );
     }
 
-    private GameSirCyclone2Protocol.ParsedBattery queryCollection(HidDevice device) {
+    private DeviceReading executeQueries(List<HidDevice> candidates, int timeoutMs) {
+        QueryOutcome bestFailure = null;
+        for (HidDevice candidate : candidates) {
+            QueryOutcome outcome = queryCollection(candidate, timeoutMs);
+            if (outcome.type() == QueryOutcomeType.SUCCESS && outcome.battery() != null) {
+                boolean wired = config.isWiredPid(outcome.pid());
+                String connLabel = wired ? "USB Cabo" : "2.4 GHz";
+                boolean charging = outcome.battery().charging();
+                return DeviceReading.realConnected(
+                        DEVICE_ID,
+                        DISPLAY_NAME,
+                        DeviceType.GAMEPAD,
+                        outcome.battery().percent(),
+                        charging,
+                        connLabel,
+                        outcome.detail()
+                );
+            }
+            if (bestFailure == null || failurePriority(outcome.type()) > failurePriority(bestFailure.type())) {
+                bestFailure = outcome;
+            }
+        }
+
+        if (bestFailure == null) {
+            return DeviceReading.realNoResponse(
+                    DEVICE_ID, DISPLAY_NAME, DeviceType.GAMEPAD, CONNECTION, "Sem resposta do controle."
+            );
+        }
+
+        String connLabel = config.isWiredPid(bestFailure.pid()) ? "USB Cabo" : "2.4 GHz";
+        return switch (bestFailure.type()) {
+            case CONFIRMED_ASLEEP -> DeviceReading.realAsleep(
+                    DEVICE_ID, DISPLAY_NAME, DeviceType.GAMEPAD, "2.4 GHz", bestFailure.detail()
+            );
+            case OPEN_FAILED -> DeviceReading.realOpenFailed(
+                    DEVICE_ID, DISPLAY_NAME, DeviceType.GAMEPAD, connLabel, bestFailure.detail()
+            );
+            case WRITE_FAILED, READ_FAILED -> DeviceReading.realReadFailed(
+                    DEVICE_ID, DISPLAY_NAME, DeviceType.GAMEPAD, connLabel, bestFailure.detail()
+            );
+            case TIMEOUT -> DeviceReading.realTimeout(
+                    DEVICE_ID, DISPLAY_NAME, DeviceType.GAMEPAD, connLabel, bestFailure.detail()
+            );
+            default -> DeviceReading.realError(
+                    DEVICE_ID, DISPLAY_NAME, DeviceType.GAMEPAD, connLabel, bestFailure.detail()
+            );
+        };
+    }
+
+    private static int failurePriority(QueryOutcomeType type) {
+        return switch (type) {
+            case CONFIRMED_ASLEEP -> 4;
+            case TIMEOUT -> 3;
+            case READ_FAILED, WRITE_FAILED -> 2;
+            case OPEN_FAILED -> 1;
+            default -> 0;
+        };
+    }
+
+    private QueryOutcome queryCollection(HidDevice device, int timeoutMs) {
+        int vid = device.getVendorId() & 0xFFFF;
+        int pid = device.getProductId() & 0xFFFF;
+        int iface = device.getInterfaceNumber();
+        int page = device.getUsagePage() & 0xFFFF;
+        int usage = device.getUsage() & 0xFFFF;
+        int outReportId = GameSirCyclone2Protocol.OUT_REPORT_ID & 0xFF;
+
         boolean opened = false;
         try {
             opened = device.open();
             if (!opened) {
-                return null;
+                String err = safeLastError(device, "HidDevice.open() retornou false");
+                logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, outReportId,
+                        "open", "FALHA_ABRIR", err, true);
+                return new QueryOutcome(
+                        QueryOutcomeType.OPEN_FAILED,
+                        null,
+                        pid,
+                        "Falha ao abrir coleção HID FFF0:0040 (IF " + iface + "): " + err
+                );
             }
 
-            // Descarta relatórios pendentes antigos na fila antes da consulta
-            device.setNonBlocking(true);
-            byte[] discard = new byte[GameSirCyclone2Protocol.FULL_REPORT_LENGTH];
-            for (int k = 0; k < 16 && device.read(discard, 0) > 0; k++) {
-                // flush
-            }
-            device.setNonBlocking(false);
+            logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, outReportId,
+                    "open", "ABERTA_COM_SUCESSO", null, false);
 
+            // Importante no Windows (signal11/hidapi embutido no hid4java 0.8.0):
+            // NÃO chamar device.read(..., 0) antes de device.write(...), pois hid_read_timeout(0)
+            // inicia um ReadFile Overlapped pendente no mesmo device_handle usado pelo WriteFile sem hEvent.
             byte[] payload = GameSirCyclone2Protocol.buildWritePayload();
             int written = device.write(
                     payload,
@@ -201,29 +302,121 @@ public final class GameSirCyclone2 implements BatteryDevice {
                     GameSirCyclone2Protocol.OUT_REPORT_ID
             );
             if (written < 0) {
-                return null;
+                String err = safeLastError(device, "write retornou " + written);
+                logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, outReportId,
+                        "write(0x0F 0x03, 64B)", "FALHA_ESCRITA (" + written + ")", err, true);
+                return new QueryOutcome(
+                        QueryOutcomeType.WRITE_FAILED,
+                        null,
+                        pid,
+                        "Falha ao enviar comando 0x0F 0x03 (IF " + iface + "): " + err
+                );
             }
 
-            long deadline = System.currentTimeMillis() + config.getReadTimeoutMs();
+            long deadline = System.currentTimeMillis() + timeoutMs;
             byte[] buffer = new byte[GameSirCyclone2Protocol.FULL_REPORT_LENGTH];
+            int nonStatePackets = 0;
+            boolean sawIdleDongleFrame = false;
+
             while (System.currentTimeMillis() < deadline) {
                 int remaining = (int) Math.max(1L, Math.min(SINGLE_READ_TIMEOUT_MS, deadline - System.currentTimeMillis()));
                 int read = device.read(buffer, remaining);
+                if (read < 0) {
+                    String err = safeLastError(device, "read retornou " + read);
+                    logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, GameSirCyclone2Protocol.IN_REPORT_ID,
+                            "read(64B)", "FALHA_LEITURA (" + read + ")", err, true);
+                    return new QueryOutcome(
+                            QueryOutcomeType.READ_FAILED,
+                            null,
+                            pid,
+                            "Falha de leitura HID na coleção FFF0:0040 (IF " + iface + "): " + err
+                    );
+                }
                 if (read > 0) {
                     GameSirCyclone2Protocol.ParsedBattery parsed =
                             GameSirCyclone2Protocol.parseInputReport(buffer, read);
                     if (parsed != null) {
-                        return parsed;
+                        logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, GameSirCyclone2Protocol.IN_REPORT_ID,
+                                "read(Report 0x12)",
+                                String.format("OK (bytes=%d, bateria=%d%%, carregando=%s, hdr=%s, b35_36=%02X_%02X)",
+                                        read,
+                                        parsed.percent(),
+                                        parsed.charging(),
+                                        formatHexSlice(buffer, 0, Math.min(8, read)),
+                                        buffer[35] & 0xFF,
+                                        buffer[36] & 0xFF),
+                                null,
+                                false);
+                        String detail = String.format(
+                                "Leitura via HID FFF0:0040 (PID 0x%04X, IF %d, Report 0x12, %d bytes).",
+                                pid, iface, read
+                        );
+                        return new QueryOutcome(QueryOutcomeType.SUCCESS, parsed, pid, detail);
                     }
+                    if (GameSirCyclone2Protocol.isIdleDongleReport(buffer, read)) {
+                        sawIdleDongleFrame = true;
+                        break;
+                    }
+                    nonStatePackets++;
                 }
             }
+
+            if (sawIdleDongleFrame) {
+                String idleMsg = String.format(
+                        "Receptor 0x%04X:0x%04X respondeu frame 0x12 ocioso (%d bytes, bytes[1..36]=0x00, tail=0x%02X) — controle desligado ou em repouso.",
+                        vid, pid, buffer.length, buffer[buffer.length - 1] & 0xFF
+                );
+                logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, GameSirCyclone2Protocol.IN_REPORT_ID,
+                        "read(Report 0x12)",
+                        "REPOUSO_CONFIRMADO (bytes=64, frame ocioso 12 00..00 CC)",
+                        idleMsg,
+                        false);
+                return new QueryOutcome(QueryOutcomeType.CONFIRMED_ASLEEP, null, pid, idleMsg);
+            }
+
+            String timeoutSummary = "Timeout (" + timeoutMs + " ms) aguardando Input Report 0x12 após comando 0x0F 0x03"
+                    + (nonStatePackets > 0 ? " (recebidos " + nonStatePackets + " pacotes não-0x12)." : " (0 bytes recebidos).");
+            logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, GameSirCyclone2Protocol.IN_REPORT_ID,
+                    "read(timeout=" + timeoutMs + "ms)",
+                    "TIMEOUT",
+                    timeoutSummary,
+                    true);
+            return new QueryOutcome(QueryOutcomeType.TIMEOUT, null, pid, timeoutSummary);
         } catch (Exception e) {
-            logger.warn("Tentativa HID no GameSir Cyclone 2 (" + device.getPath() + ") falhou: " + e.getMessage());
+            logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, outReportId,
+                    "queryCollection", "EXCECAO", e.getMessage(), true);
+            return new QueryOutcome(
+                    QueryOutcomeType.READ_FAILED,
+                    null,
+                    pid,
+                    "Exceção HID no GameSir Cyclone 2: " + e.getMessage()
+            );
         } finally {
             if (opened) {
                 device.close();
             }
         }
-        return null;
+    }
+
+    private static String formatHexSlice(byte[] buf, int offset, int count) {
+        StringBuilder sb = new StringBuilder();
+        int end = Math.min(buf.length, offset + count);
+        for (int i = offset; i < end; i++) {
+            if (i > offset) sb.append(' ');
+            sb.append(String.format("%02X", buf[i] & 0xFF));
+        }
+        return sb.toString();
+    }
+
+    private static String safeLastError(HidDevice device, String fallback) {
+        try {
+            String msg = device.getLastErrorMessage();
+            if (msg != null && !msg.isBlank() && !"Success".equalsIgnoreCase(msg.trim())) {
+                return msg.trim();
+            }
+        } catch (Exception ignored) {
+            // fallback
+        }
+        return fallback;
     }
 }

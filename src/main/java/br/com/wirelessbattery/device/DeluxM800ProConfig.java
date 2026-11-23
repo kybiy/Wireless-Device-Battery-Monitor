@@ -15,10 +15,13 @@ import java.util.Properties;
  */
 public final class DeluxM800ProConfig {
     // Valores de referência encontrados em xb-bx/m800-pro-driver (main.c)
+    // e validados no receptor real no Windows (IF 1, UsagePage 0xFF00, Usage 0x0001, Col04)
     public static final int DEFAULT_VENDOR_ID = 0x248A;
     public static final int DEFAULT_WIRELESS_PID = 0x5B2F;
     public static final int DEFAULT_WIRED_PID = 0x5B2E;
     public static final int DEFAULT_INTERFACE_NUMBER = 1;
+    public static final int DEFAULT_USAGE_PAGE = 0xFF00;
+    public static final int DEFAULT_USAGE = 0x0001;
     public static final int DEFAULT_MAX_ATTEMPTS = 16;
 
     private final int vendorId;
@@ -26,6 +29,7 @@ public final class DeluxM800ProConfig {
     private final int wiredProductId;
     private final int interfaceNumber;
     private final Integer usagePage;
+    private final Integer usage;
     private final int maxAttempts;
 
     public DeluxM800ProConfig(
@@ -36,11 +40,24 @@ public final class DeluxM800ProConfig {
             Integer usagePage,
             int maxAttempts
     ) {
+        this(vendorId, wirelessProductId, wiredProductId, interfaceNumber, usagePage, null, maxAttempts);
+    }
+
+    public DeluxM800ProConfig(
+            int vendorId,
+            int wirelessProductId,
+            int wiredProductId,
+            int interfaceNumber,
+            Integer usagePage,
+            Integer usage,
+            int maxAttempts
+    ) {
         this.vendorId = vendorId;
         this.wirelessProductId = wirelessProductId;
         this.wiredProductId = wiredProductId;
         this.interfaceNumber = interfaceNumber;
         this.usagePage = usagePage;
+        this.usage = usage;
         this.maxAttempts = Math.max(1, Math.min(maxAttempts, 64));
     }
 
@@ -50,7 +67,8 @@ public final class DeluxM800ProConfig {
                 DEFAULT_WIRELESS_PID,
                 DEFAULT_WIRED_PID,
                 DEFAULT_INTERFACE_NUMBER,
-                null,
+                DEFAULT_USAGE_PAGE,
+                DEFAULT_USAGE,
                 DEFAULT_MAX_ATTEMPTS
         );
     }
@@ -74,8 +92,15 @@ public final class DeluxM800ProConfig {
         int wiredPid = parseHexOrInt(resolve("wirelessbattery.m800pro.pid.wired", props), DEFAULT_WIRED_PID);
         int iface = parseHexOrInt(resolve("wirelessbattery.m800pro.interface", props), DEFAULT_INTERFACE_NUMBER);
         Integer usagePage = parseOptionalHexOrInt(resolve("wirelessbattery.m800pro.usagePage", props));
+        if (usagePage == null) {
+            usagePage = DEFAULT_USAGE_PAGE;
+        }
+        Integer usage = parseOptionalHexOrInt(resolve("wirelessbattery.m800pro.usage", props));
+        if (usage == null) {
+            usage = DEFAULT_USAGE;
+        }
         int attempts = parseHexOrInt(resolve("wirelessbattery.m800pro.maxAttempts", props), DEFAULT_MAX_ATTEMPTS);
-        return new DeluxM800ProConfig(vid, wirelessPid, wiredPid, iface, usagePage, attempts);
+        return new DeluxM800ProConfig(vid, wirelessPid, wiredPid, iface, usagePage, usage, attempts);
     }
 
     private static String resolve(String key, Properties fileProps) {
@@ -127,16 +152,54 @@ public final class DeluxM800ProConfig {
         return usagePage;
     }
 
+    public Integer getUsage() {
+        return usage;
+    }
+
     public int getMaxAttempts() {
         return maxAttempts;
     }
 
     public boolean matches(int vid, int pid) {
-        return vid == vendorId && (pid == wirelessProductId || pid == wiredProductId);
+        return (vid & 0xFFFF) == vendorId && ((pid & 0xFFFF) == wirelessProductId || (pid & 0xFFFF) == wiredProductId);
+    }
+
+    /**
+     * Verifica se a coleção corresponde exatamente à interface e UsagePage/Usage alvo
+     * (IF 1, UsagePage 0xFF00, Usage 0x0001 / Col04 no receptor real).
+     */
+    public boolean matchesTargetCollection(int vid, int pid, int iface, int collUsagePage, int collUsage) {
+        if (!matches(vid, pid)) {
+            return false;
+        }
+        boolean ifaceMatch = (iface == interfaceNumber || iface < 0);
+        int page = collUsagePage & 0xFFFF;
+        int u = collUsage & 0xFFFF;
+        boolean pageMatch = usagePage != null ? page == (usagePage & 0xFFFF) : page >= 0xFF00;
+        boolean usageMatch = usage == null || u == (usage & 0xFFFF);
+        return ifaceMatch && pageMatch && usageMatch;
+    }
+
+    /**
+     * Verifica se é uma coleção Vendor (>= 0xFF00) na mesma interface esperada (IF 1),
+     * excluindo coleções padrão (mouse/teclado/consumer) e interfaces diferentes (ex.: IF 2 0xFFEF).
+     */
+    public boolean matchesVendorFallbackOnExpectedInterface(int vid, int pid, int iface, int collUsagePage) {
+        if (!matches(vid, pid)) {
+            return false;
+        }
+        boolean ifaceMatch = (iface == interfaceNumber || iface < 0);
+        int page = collUsagePage & 0xFFFF;
+        return ifaceMatch && page >= 0xFF00;
     }
 
     public String describeIds() {
-        return String.format("VID 0x%04X / PID 0x%04X (2.4G) ou 0x%04X (Cabo), IF %d",
-                vendorId, wirelessProductId, wiredProductId, interfaceNumber);
+        return String.format("VID 0x%04X / PID 0x%04X (2.4G) ou 0x%04X (Cabo), IF %d, Usage %s:%s",
+                vendorId,
+                wirelessProductId,
+                wiredProductId,
+                interfaceNumber,
+                usagePage != null ? String.format("0x%04X", usagePage & 0xFFFF) : "0xFF00+",
+                usage != null ? String.format("0x%04X", usage & 0xFFFF) : "*");
     }
 }

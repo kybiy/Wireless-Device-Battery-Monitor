@@ -1,6 +1,7 @@
 package br.com.wirelessbattery.ui;
 
 import br.com.wirelessbattery.config.AppSettings;
+import br.com.wirelessbattery.config.AppVersion;
 import br.com.wirelessbattery.config.DisplayMode;
 import br.com.wirelessbattery.config.WindowsStartupManager;
 import br.com.wirelessbattery.device.DeviceManager;
@@ -41,6 +42,7 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.WindowConstants;
 
 /**
@@ -79,6 +81,11 @@ public final class MainWindow extends JFrame {
 
     private final TrayDisplayController trayController;
     private final TaskbarWidgetWindow taskbarWidget;
+    private final Timer explorerWatchTimer;
+    private long lastKnownTaskbarPeer;
+    private boolean minimizedBootPending;
+    private int minimizedBootRetryCount;
+    private String lastUiSummary;
 
     public MainWindow(
             AppSettings settings,
@@ -101,6 +108,7 @@ public final class MainWindow extends JFrame {
         setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         setMinimumSize(new Dimension(480, 360));
         setPreferredSize(new Dimension(560, 492));
+        applyWindowIcon();
 
         this.refreshButton = new IconButton(DeviceIconFactory.IconName.REFRESH, "Atualizar agora", () -> {
             updatedStatusLabel.setText("Atualizando...");
@@ -129,12 +137,18 @@ public final class MainWindow extends JFrame {
                 this::exitApplication
         );
         this.taskbarWidget.setOnAvailabilityChanged(this::syncExternalIndicators);
+        this.lastKnownTaskbarPeer = WindowsTaskbarLocator.findTaskbarAnchor()
+                .map(WindowsTaskbarLocator.TaskbarAnchor::taskbarHwndPeer)
+                .orElse(0L);
+        this.explorerWatchTimer = new Timer(2000, e -> checkExplorerAndIndicatorsState());
+        this.explorerWatchTimer.setRepeats(true);
+        this.explorerWatchTimer.start();
 
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
                 rememberWindowPosition();
-                if (settings.isMinimizeToTray() && trayController.isSupported()) {
+                if (settings.isMinimizeToTray() && (trayController.isSupported() || taskbarWidget.isVisible())) {
                     minimizeToTray();
                 } else {
                     exitApplication();
@@ -156,6 +170,16 @@ public final class MainWindow extends JFrame {
         restoreWindowPosition();
     }
 
+    private void applyWindowIcon() {
+        try (var in = MainWindow.class.getResourceAsStream("/icons/app-icon.png")) {
+            if (in != null) {
+                setIconImage(javax.imageio.ImageIO.read(in));
+            }
+        } catch (Exception ignored) {
+            // Mantém ícone padrão se o recurso não estiver disponível
+        }
+    }
+
     private JPanel buildHeader() {
         JPanel headerWrap = new JPanel(new BorderLayout(0, 12));
         headerWrap.setOpaque(false);
@@ -171,6 +195,7 @@ public final class MainWindow extends JFrame {
         titleStack.setOpaque(false);
         titleStack.setLayout(new BoxLayout(titleStack, BoxLayout.Y_AXIS));
         titleLabel.setFont(ThemeManager.fontBold(16.5f));
+        titleLabel.setToolTipText(AppVersion.formatStartupInfo());
         subtitleLabel.setFont(ThemeManager.fontRegular(12f));
         titleStack.add(titleLabel);
         titleStack.add(Box.createVerticalStrut(1));
@@ -226,7 +251,7 @@ public final class MainWindow extends JFrame {
         diagnosticsLink.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
-                new HidDiagnosticsDialog(MainWindow.this, diagnosticsService).setVisible(true);
+                new HidDiagnosticsDialog(MainWindow.this, diagnosticsService, logger).setVisible(true);
             }
         });
 
@@ -303,10 +328,37 @@ public final class MainWindow extends JFrame {
             }
         }
 
+        logUiSummaryIfChanged(activeList, simActive);
         updateFooterSummary(activeList);
         syncExternalIndicators();
         cardsListPanel.revalidate();
         cardsListPanel.repaint();
+    }
+
+    private void logUiSummaryIfChanged(List<DeviceReading> activeList, boolean simActive) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(simActive ? "simulação | " : "real | ");
+        if (activeList.isEmpty()) {
+            sb.append("nenhum card exibido");
+        } else {
+            for (int i = 0; i < activeList.size(); i++) {
+                DeviceReading r = activeList.get(i);
+                if (i > 0) {
+                    sb.append("; ");
+                }
+                sb.append(r.displayName())
+                        .append("=")
+                        .append(r.formattedBatteryText())
+                        .append(" (")
+                        .append(r.status().getLabel())
+                        .append(")");
+            }
+        }
+        String summary = sb.toString();
+        if (!summary.equals(lastUiSummary)) {
+            lastUiSummary = summary;
+            logger.info("[UI] Cards exibidos (" + activeList.size() + "): " + summary);
+        }
     }
 
     private boolean shouldShowRealReading(DeviceReading r) {
@@ -316,8 +368,7 @@ public final class MainWindow extends JFrame {
         if (settings.isShowDisconnectedDevices()) {
             return true;
         }
-        return r.status().isOnline()
-                || r.status() == ConnectionStatus.ASLEEP
+        return r.status().isReceiverDetectedState()
                 || deviceManager.isDeviceDetected(r.deviceId());
     }
 
@@ -425,7 +476,6 @@ public final class MainWindow extends JFrame {
     }
 
     private void openSettingsDialog(boolean openSimulationTab) {
-        boolean prevStartup = settings.isStartWithWindows();
         int prevInterval = settings.getPollIntervalSeconds();
 
         SettingsDialog dialog = new SettingsDialog(
@@ -440,9 +490,7 @@ public final class MainWindow extends JFrame {
             return;
         }
 
-        if (prevStartup != settings.isStartWithWindows()) {
-            WindowsStartupManager.applyStartupSetting(settings.isStartWithWindows(), logger);
-        }
+        WindowsStartupManager.applyStartupSetting(settings.isStartWithWindows(), logger);
         if (prevInterval != settings.getPollIntervalSeconds()) {
             deviceManager.updatePollInterval(settings.getPollIntervalSeconds());
         }
@@ -525,9 +573,77 @@ public final class MainWindow extends JFrame {
         return false;
     }
 
+    /**
+     * Inicia a sessão em modo minimizado (sem exibir a janela principal), verificando a prontidão
+     * da bandeja do sistema / barra de tarefas e agendando retentativas automáticas caso o Windows
+     * Explorer ainda esteja inicializando durante o logon do Windows 11.
+     */
+    public void startMinimizedSession(boolean viaCommandLineArg) {
+        try {
+            logger.info("[STARTUP] Iniciando em modo minimizado (argumento --minimized=" + viaCommandLineArg
+                    + ", preferência startMinimized=" + settings.isStartMinimized()
+                    + ", modo de indicador=" + settings.getDisplayMode() + ").");
+            syncExternalIndicators();
+            boolean trayReady = trayController.hasInstalledIcons();
+            boolean widgetReady = taskbarWidget.isVisible();
+            if (trayReady || widgetReady) {
+                minimizedBootPending = false;
+                logger.info("[STARTUP] Inicialização minimizada concluída sem erros (bandeja ativa=" + trayReady
+                        + ", widget da barra de tarefas visível=" + widgetReady + ").");
+            } else {
+                minimizedBootPending = true;
+                minimizedBootRetryCount = 0;
+                logger.warn("[STARTUP] Bandeja do sistema / barra de tarefas ainda não pronta no logon — aguardando inicialização do Windows Explorer...");
+            }
+        } catch (Exception e) {
+            logger.error("[STARTUP] Erro ao iniciar minimizado", e);
+            restoreFromTray();
+        }
+    }
+
+    private void checkExplorerAndIndicatorsState() {
+        long currentPeer = WindowsTaskbarLocator.findTaskbarAnchor()
+                .map(WindowsTaskbarLocator.TaskbarAnchor::taskbarHwndPeer)
+                .orElse(0L);
+        if (currentPeer != 0L && currentPeer != lastKnownTaskbarPeer) {
+            boolean wasRestart = (lastKnownTaskbarPeer != 0L);
+            lastKnownTaskbarPeer = currentPeer;
+            logger.info("[STARTUP] Windows Explorer / Shell_TrayWnd "
+                    + (wasRestart ? "reiniciado" : "disponível")
+                    + " (hwnd=0x" + Long.toHexString(currentPeer)
+                    + ") — recriando indicadores na bandeja e barra de tarefas.");
+            trayController.removeAllIcons();
+            taskbarWidget.refreshLayoutFromSettings();
+            syncExternalIndicators();
+        } else if (currentPeer == 0L && lastKnownTaskbarPeer != 0L) {
+            lastKnownTaskbarPeer = 0L;
+        }
+
+        if (trayController.isActive() && trayController.isSupported() && !trayController.hasInstalledIcons()) {
+            syncExternalIndicators();
+        }
+
+        if (minimizedBootPending) {
+            minimizedBootRetryCount++;
+            syncExternalIndicators();
+            boolean trayReady = trayController.hasInstalledIcons();
+            boolean widgetReady = taskbarWidget.isVisible();
+            if (trayReady || widgetReady) {
+                minimizedBootPending = false;
+                logger.info("[STARTUP] Indicadores ativados com sucesso após aguardar Windows Explorer (tentativa "
+                        + minimizedBootRetryCount + ", bandeja ativa=" + trayReady
+                        + ", widget visível=" + widgetReady + ").");
+            } else if (minimizedBootRetryCount >= 15) {
+                minimizedBootPending = false;
+                logger.warn("[STARTUP] Erro ao iniciar minimizado: bandeja do sistema e barra de tarefas permaneceram indisponíveis após 30s — exibindo janela principal como fallback.");
+                restoreFromTray();
+            }
+        }
+    }
+
     public void minimizeToTray() {
         rememberWindowPosition();
-        if (trayController.isSupported() && settings.isMinimizeToTray()) {
+        if ((trayController.isSupported() || taskbarWidget.isVisible()) && settings.isMinimizeToTray()) {
             setVisible(false);
             logger.info("Aplicativo minimizado para a bandeja.");
         } else {
@@ -535,7 +651,12 @@ public final class MainWindow extends JFrame {
         }
     }
 
+    public void bringToFront() {
+        restoreFromTray();
+    }
+
     private void restoreFromTray() {
+        minimizedBootPending = false;
         setVisible(true);
         setState(NORMAL);
         toFront();
@@ -551,6 +672,7 @@ public final class MainWindow extends JFrame {
     }
 
     private void exitApplication() {
+        explorerWatchTimer.stop();
         rememberWindowPosition();
         trayController.removeAllIcons();
         taskbarWidget.shutdown();

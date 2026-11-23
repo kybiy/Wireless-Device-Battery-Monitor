@@ -50,6 +50,28 @@ class DeluxM800ProProtocolTest {
     }
 
     @Test
+    void parses32ByteHid4JavaPayloadEvenWhenReportedLengthIs33AndFirstByteIs0x0C() {
+        byte[] payload = new byte[32];
+        payload[0] = DeluxM800ProProtocol.FEATURE_REPORT_ID; // não deve deslocar índice no payload já sem Report ID
+        payload[17] = 88;
+        payload[18] = 0;
+
+        DeluxM800ProProtocol.ParsedBattery parsed =
+                DeluxM800ProProtocol.parseHid4JavaFeaturePayload(payload, 33);
+        assertNotNull(parsed);
+        assertEquals(88, parsed.percent());
+        assertFalse(parsed.charging());
+
+        payload[17] = 45;
+        payload[18] = 1;
+        DeluxM800ProProtocol.ParsedBattery charging =
+                DeluxM800ProProtocol.parseHid4JavaFeaturePayload(payload, 33);
+        assertNotNull(charging);
+        assertEquals(45, charging.percent());
+        assertTrue(charging.charging());
+    }
+
+    @Test
     void returnsNullWhenBatteryByteIsZeroOrOutOfRange() {
         byte[] empty = new byte[33];
         empty[0] = DeluxM800ProProtocol.FEATURE_REPORT_ID;
@@ -62,11 +84,22 @@ class DeluxM800ProProtocolTest {
     }
 
     @Test
-    void defaultConfigMatchesReferenceIds() {
+    void defaultConfigMatchesConfirmedCol04AndIgnoresInterface2AndStandardCollections() {
         DeluxM800ProConfig cfg = DeluxM800ProConfig.defaultReference();
         assertTrue(cfg.matches(0x248A, 0x5B2F));
         assertTrue(cfg.matches(0x248A, 0x5B2E));
         assertFalse(cfg.matches(0x25A7, 0xFA7C));
         assertEquals(1, cfg.getInterfaceNumber());
+        assertEquals(0xFF00, cfg.getUsagePage());
+        assertEquals(0x0001, cfg.getUsage());
+
+        // Coleção alvo confirmada: IF 1, UsagePage 0xFF00, Usage 0x0001 (Col04)
+        assertTrue(cfg.matchesTargetCollection(0x248A, 0x5B2F, 1, 0xFF00, 0x0001));
+        // Não abrir IF 2 (0xFFEF:0x0000) nem coleções padrão de mouse/teclado/consumer
+        assertFalse(cfg.matchesTargetCollection(0x248A, 0x5B2F, 2, 0xFFEF, 0x0000));
+        assertFalse(cfg.matchesVendorFallbackOnExpectedInterface(0x248A, 0x5B2F, 2, 0xFFEF));
+        assertFalse(cfg.matchesTargetCollection(0x248A, 0x5B2F, 1, 0x0001, 0x0002));
+        assertFalse(cfg.matchesVendorFallbackOnExpectedInterface(0x248A, 0x5B2F, 1, 0x0001));
+        assertFalse(cfg.matchesVendorFallbackOnExpectedInterface(0x248A, 0x5B2F, 1, 0x000C));
     }
 }

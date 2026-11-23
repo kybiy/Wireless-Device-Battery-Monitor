@@ -71,7 +71,27 @@ public final class TrayDisplayController {
     }
 
     public boolean isSupported() {
-        return SystemTray.isSupported();
+        try {
+            return SystemTray.isSupported();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+
+    public boolean hasInstalledIcons() {
+        if (!active || !isSupported() || deviceIcons.isEmpty()) {
+            return false;
+        }
+        try {
+            TrayIcon[] installed = SystemTray.getSystemTray().getTrayIcons();
+            return installed != null && installed.length > 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public void setActive(boolean active) {
@@ -81,10 +101,26 @@ public final class TrayDisplayController {
         }
     }
 
+    /**
+     * Força a recriação completa dos ícones na bandeja do sistema (por exemplo, após
+     * reinicialização do Windows Explorer ou inicialização tardia da bandeja no boot).
+     */
+    public void reinstallIcons(List<DeviceReading> displayReadings) {
+        removeAllIcons();
+        if (active && isSupported()) {
+            updateReadings(displayReadings);
+        }
+    }
+
     public void updateReadings(List<DeviceReading> displayReadings) {
         if (!isSupported() || !active) {
             removeAllIcons();
             return;
+        }
+
+        if (!deviceIcons.isEmpty() && !hasInstalledIcons()) {
+            logger.warn("[TRAY] Ícones da bandeja ausentes no SystemTray do Windows — recriando ícones...");
+            removeAllIcons();
         }
 
         List<DeviceReading> items = new ArrayList<>(displayReadings);

@@ -66,6 +66,7 @@ public final class DeviceManager implements AutoCloseable {
     private volatile long lastWatchdogWallMillis = System.currentTimeMillis();
     private volatile LocalTime lastPollTime;
     private volatile boolean closed;
+    private String lastCycleSummarySignature;
 
     public DeviceManager(AppLogger logger) {
         this(null, logger);
@@ -294,7 +295,7 @@ public final class DeviceManager implements AutoCloseable {
                 DeviceReading reading = querySingleDevice(device, attachedHid);
                 boolean hardwareHere = device.isHardwarePresent(attachedHid)
                         || reading.hasBatteryPercent()
-                        || reading.status() == ConnectionStatus.ASLEEP;
+                        || reading.status().isReceiverDetectedState();
                 if (hardwareHere) {
                     cycleDetected.add(device.getId());
                 }
@@ -313,6 +314,7 @@ public final class DeviceManager implements AutoCloseable {
                 detectedDeviceIds.addAll(cycleDetected);
                 lastPollTime = LocalTime.now().withNano(0);
                 immutable = Collections.unmodifiableList(new ArrayList<>(readings.values()));
+                logDetectionCycleSummaryIfChanged(attachedHid.size(), immutable, cycleDetected);
             }
 
             for (Consumer<List<DeviceReading>> listener : listeners) {
@@ -433,10 +435,52 @@ public final class DeviceManager implements AutoCloseable {
             if (currStatus.isOnline()) {
                 logger.info(current.displayName() + " conectado (" + current.batteryPercent() + "%).");
             } else if (currStatus == ConnectionStatus.ASLEEP) {
-                logger.info(current.displayName() + " entrou em repouso.");
-            } else if (prevStatus.isOnline() || prevStatus == ConnectionStatus.ASLEEP) {
+                logger.info(current.displayName() + " em repouso confirmado.");
+            } else if (currStatus == ConnectionStatus.NO_RESPONSE
+                    || currStatus == ConnectionStatus.OPEN_FAILED
+                    || currStatus == ConnectionStatus.READ_FAILED
+                    || currStatus == ConnectionStatus.TIMEOUT) {
+                logger.warn(current.displayName() + " — " + currStatus.getLabel()
+                        + (current.detailMessage().isBlank() ? "" : ": " + current.detailMessage()));
+            } else if (currStatus == ConnectionStatus.PENDING_PROTOCOL) {
+                logger.info(current.displayName() + " — " + currStatus.getLabel() + ".");
+            } else if (prevStatus.isOnline() || prevStatus.isReceiverDetectedState()) {
                 logger.info(current.displayName() + " desconectado.");
             }
+        }
+    }
+
+    private void logDetectionCycleSummaryIfChanged(
+            int totalHidCount,
+            List<DeviceReading> currentReadings,
+            Set<String> cycleDetected
+    ) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("HID=").append(totalHidCount).append(" | ");
+        if (currentReadings.isEmpty()) {
+            sb.append("nenhum dispositivo ativo");
+        } else {
+            for (int i = 0; i < currentReadings.size(); i++) {
+                DeviceReading r = currentReadings.get(i);
+                if (i > 0) {
+                    sb.append("; ");
+                }
+                sb.append(r.displayName())
+                        .append("=")
+                        .append(r.status().name())
+                        .append(" (")
+                        .append(r.formattedBatteryText())
+                        .append(", ")
+                        .append(r.status().getLabel())
+                        .append(", detectado=")
+                        .append(cycleDetected.contains(r.deviceId()))
+                        .append(")");
+            }
+        }
+        String signature = sb.toString();
+        if (!signature.equals(lastCycleSummarySignature)) {
+            lastCycleSummarySignature = signature;
+            logger.info("[DETECÇÃO] " + signature);
         }
     }
 

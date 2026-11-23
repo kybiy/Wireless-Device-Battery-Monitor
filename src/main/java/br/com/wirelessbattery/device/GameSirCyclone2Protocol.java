@@ -3,19 +3,21 @@ package br.com.wirelessbattery.device;
 import java.util.Arrays;
 
 /**
- * Protocolo somente-leitura para consulta de bateria do GameSir Cyclone 2
+ * Protocolo estritamente somente-leitura para consulta de bateria do GameSir Cyclone 2
  * (modo XInput via receptor 2.4 GHz ou cabo USB).
  *
- * Baseado em {@code PollGameSirCyclone} ({@code src/drivers/gamesir.cpp} do projeto
- * de referência, protocolo documentado em {@code vdemonchy/cyclone2-linux}):
+ * Confirmado pelas especificações de protocolo de {@code pedrosegato/gamesir-reverse-engineering}
+ * (engenharia reversa do GameSir Connect 1.16.7) e {@code vdemonchy/cyclone2-linux}:
  * - Coleção HID proprietária: Usage Page {@code 0xFFF0}, Usage {@code 0x0040}
- * - Output Report {@code 0x0F 0x03} (64 bytes): solicita envio de frames de estado (somente leitura)
+ * - Output Report {@code 0x0F 0xF2 0x00} (64 bytes): Heartbeat oficial somente-leitura do GameSir Connect,
+ *   que instrui o controle a transmitir relatórios de estado {@code 0x12} por ~1 segundo.
+ *   (Não utiliza o comando {@code 0x03}, que corresponde a escrita de perfil {@code WriteProfile}.)
  * - Input Report {@code 0x12} (>= 37 bytes):
- *   - {@code data[35] == 1}: cabo conectado / carregando
- *   - {@code data[36]}: porcentagem da bateria ({@code 0..100})
- * - Frames de eventos {@code 0x10} são ignorados durante a leitura.
+ *   - {@code data[35] != 0}: cabo conectado / carregando
+ *   - {@code data[36]}: porcentagem real da bateria ({@code 0..100})
+ * - Frames de resposta/evento {@code 0x10} são ignorados durante a leitura.
  *
- * Nenhum comando de firmware, vibração, iluminação ou remapeamento de botões é enviado.
+ * Nenhum comando de perfil, firmware, vibração, iluminação ou remapeamento é enviado.
  */
 public final class GameSirCyclone2Protocol {
     public static final byte OUT_REPORT_ID = 0x0F;
@@ -58,21 +60,53 @@ public final class GameSirCyclone2Protocol {
     }
 
     /**
+     * Verifica se o pacote {@code 0x12} recebido é o frame ocioso do receptor 2.4 GHz
+     * ({@code 12 00 00 ... 00 CC}), enviado pelo dongle {@code 0x3537:0x0575} quando o controle
+     * está desligado ou em repouso (bytes 1..36 todos zerados, sem analógicos em 0x80 nem D-pad em 0x0F).
+     */
+    public static boolean isIdleDongleReport(byte[] data, int length) {
+        if (data == null || length <= 0) {
+            return false;
+        }
+        int available = Math.min(length, data.length);
+        if (available < MIN_REPLY_LENGTH) {
+            return false;
+        }
+        if ((data[0] & 0xFF) != IN_REPORT_ID) {
+            return false;
+        }
+        for (int i = 1; i <= BATTERY_INDEX; i++) {
+            if (data[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Interpreta um Input Report recebido da coleção {@code FFF0:0040}.
      *
-     * @return {@link ParsedBattery} se for um relatório {@code 0x12} válido com percentual 0..100;
-     *         {@code null} para relatórios de evento ({@code 0x10}), curtos ou inválidos.
+     * @return {@link ParsedBattery} se for um relatório {@code 0x12} ativo válido com percentual 1..100;
+     *         {@code null} para relatórios de evento ({@code 0x10}), frames ociosos do dongle
+     *         ({@code bytes[1..36] == 0}), curtos ou fora da faixa.
      */
     public static ParsedBattery parseInputReport(byte[] data, int length) {
-        if (data == null || length < MIN_REPLY_LENGTH || data.length < length) {
+        if (data == null || length <= 0) {
+            return null;
+        }
+        int available = Math.min(length, data.length);
+        if (available < MIN_REPLY_LENGTH) {
             return null;
         }
         int reportId = data[0] & 0xFF;
         if (reportId != IN_REPORT_ID) {
             return null;
         }
+        if (isIdleDongleReport(data, length)) {
+            return null;
+        }
         int rawBattery = data[BATTERY_INDEX] & 0xFF;
-        if (rawBattery > 100) {
+        if (rawBattery <= 0 || rawBattery > 100) {
             return null;
         }
         boolean charging = (data[CHARGING_INDEX] & 0xFF) == 1;

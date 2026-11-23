@@ -1,18 +1,24 @@
 package br.com.wirelessbattery.ui;
 
+import br.com.wirelessbattery.config.AppVersion;
+import br.com.wirelessbattery.diagnostics.AppLogger;
 import br.com.wirelessbattery.diagnostics.HidDeviceInfo;
 import br.com.wirelessbattery.diagnostics.HidDiagnosticsService;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.Font;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JDialog;
@@ -22,8 +28,11 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
 import javax.swing.JTable;
+import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
@@ -31,10 +40,11 @@ import javax.swing.table.AbstractTableModel;
 
 /**
  * Diálogo de diagnóstico HID somente-leitura para identificar VID/PID, interfaces,
- * Usage Page, Usage, Path e status de identificação, com cópia e exportação de relatório.
+ * Usage Page, Usage, Path, status de identificação e logs estruturados das consultas HID.
  */
 public final class HidDiagnosticsDialog extends JDialog {
     private final HidDiagnosticsService diagnosticsService;
+    private final AppLogger logger;
     private final HidTableModel tableModel = new HidTableModel();
     private final JTable table = new JTable(tableModel);
     private final JTextField filterField = new JTextField(26);
@@ -43,17 +53,52 @@ public final class HidDiagnosticsDialog extends JDialog {
     private final JButton copyButton = new JButton("Copiar relatório");
     private final JButton exportButton = new JButton("Exportar .txt");
 
+    private JTextArea logArea;
+    private Consumer<String> logListener;
     private List<HidDeviceInfo> allDevices = List.of();
 
     public HidDiagnosticsDialog(JFrame owner, HidDiagnosticsService diagnosticsService) {
-        super(owner, "Diagnóstico HID (Somente Leitura)", false);
+        this(owner, diagnosticsService, null);
+    }
+
+    public HidDiagnosticsDialog(JFrame owner, HidDiagnosticsService diagnosticsService, AppLogger logger) {
+        super(owner, "Diagnóstico HID (Somente Leitura) — " + AppVersion.formatShort(), false);
         this.diagnosticsService = diagnosticsService;
+        this.logger = logger;
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setLayout(new BorderLayout(10, 10));
-        setPreferredSize(new Dimension(1060, 520));
+        setPreferredSize(new Dimension(1080, 560));
+
+        JPanel devicesTab = buildDevicesTab();
+        if (logger != null) {
+            JTabbedPane tabs = new JTabbedPane();
+            tabs.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
+            tabs.addTab("Interfaces HID (Somente Leitura)", devicesTab);
+            tabs.addTab("Logs de Diagnóstico HID", buildLogsTab());
+            add(tabs, BorderLayout.CENTER);
+        } else {
+            add(devicesTab, BorderLayout.CENTER);
+        }
+
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosed(WindowEvent e) {
+                if (HidDiagnosticsDialog.this.logger != null && logListener != null) {
+                    HidDiagnosticsDialog.this.logger.removeListener(logListener);
+                }
+            }
+        });
+
+        pack();
+        setLocationRelativeTo(owner);
+        loadDevicesAsync();
+    }
+
+    private JPanel buildDevicesTab() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
 
         JPanel top = new JPanel(new BorderLayout(8, 8));
-        top.setBorder(BorderFactory.createEmptyBorder(12, 14, 0, 14));
+        top.setBorder(BorderFactory.createEmptyBorder(10, 10, 0, 10));
 
         JLabel safetyNotice = new JLabel(
                 "Modo passivo (somente enumeração): nenhum comando de controle desconhecido é enviado aos periféricos."
@@ -71,10 +116,10 @@ public final class HidDiagnosticsDialog extends JDialog {
         table.setFillsViewportHeight(true);
         table.setRowHeight(25);
         JScrollPane scroll = new JScrollPane(table);
-        scroll.setBorder(BorderFactory.createEmptyBorder(0, 14, 0, 14));
+        scroll.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 10));
 
         JPanel bottom = new JPanel(new BorderLayout(8, 0));
-        bottom.setBorder(BorderFactory.createEmptyBorder(0, 14, 12, 14));
+        bottom.setBorder(BorderFactory.createEmptyBorder(0, 10, 10, 10));
         bottom.add(statusLabel, BorderLayout.WEST);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
@@ -85,9 +130,9 @@ public final class HidDiagnosticsDialog extends JDialog {
         buttons.add(closeButton);
         bottom.add(buttons, BorderLayout.EAST);
 
-        add(top, BorderLayout.NORTH);
-        add(scroll, BorderLayout.CENTER);
-        add(bottom, BorderLayout.SOUTH);
+        panel.add(top, BorderLayout.NORTH);
+        panel.add(scroll, BorderLayout.CENTER);
+        panel.add(bottom, BorderLayout.SOUTH);
 
         refreshButton.addActionListener(e -> loadDevicesAsync());
         copyButton.addActionListener(e -> copyReportToClipboard());
@@ -100,9 +145,46 @@ public final class HidDiagnosticsDialog extends JDialog {
             @Override public void changedUpdate(DocumentEvent e) { applyFilter(); }
         });
 
-        pack();
-        setLocationRelativeTo(owner);
-        loadDevicesAsync();
+        return panel;
+    }
+
+    private JPanel buildLogsTab() {
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        logArea = new JTextArea();
+        logArea.setEditable(false);
+        logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        for (String line : logger.getHistory()) {
+            logArea.append(line + "\n");
+        }
+        logArea.setCaretPosition(logArea.getDocument().getLength());
+
+        logListener = line -> SwingUtilities.invokeLater(() -> {
+            if (logArea != null) {
+                logArea.append(line + "\n");
+                logArea.setCaretPosition(logArea.getDocument().getLength());
+            }
+        });
+        logger.addListener(logListener);
+
+        JPanel bottom = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        JButton copyLogsBtn = new JButton("Copiar logs");
+        copyLogsBtn.addActionListener(e -> {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(logArea.getText()), null);
+            JOptionPane.showMessageDialog(this, "Logs copiados para a área de transferência.", "Logs HID", JOptionPane.INFORMATION_MESSAGE);
+        });
+        JButton clearLogsBtn = new JButton("Limpar");
+        clearLogsBtn.addActionListener(e -> {
+            logger.clear();
+            logArea.setText("");
+        });
+        bottom.add(copyLogsBtn);
+        bottom.add(clearLogsBtn);
+
+        panel.add(new JScrollPane(logArea), BorderLayout.CENTER);
+        panel.add(bottom, BorderLayout.SOUTH);
+        return panel;
     }
 
     private void loadDevicesAsync() {
@@ -135,6 +217,7 @@ public final class HidDiagnosticsDialog extends JDialog {
             List<HidDeviceInfo> filtered = new ArrayList<>();
             for (HidDeviceInfo d : allDevices) {
                 String combined = (d.formatVidPid() + " " + d.formatUsagePage() + " "
+                        + d.formatReportCaps() + " "
                         + d.safeManufacturer() + " " + d.safeProduct() + " "
                         + d.safeIdentificationStatus() + " " + d.safePath())
                         .toLowerCase(Locale.ROOT);
@@ -185,7 +268,7 @@ public final class HidDiagnosticsDialog extends JDialog {
 
     private static final class HidTableModel extends AbstractTableModel {
         private static final String[] COLUMNS = {
-                "Produto", "Fabricante", "VID", "PID", "IF", "Usage Page", "Usage", "Status de identificação", "Device Path"
+                "Produto", "Fabricante", "VID", "PID", "IF", "Usage Page", "Usage", "Caps (In/Out/Feat)", "Status de identificação", "Device Path"
         };
         private List<HidDeviceInfo> rows = List.of();
 
@@ -213,8 +296,9 @@ public final class HidDiagnosticsDialog extends JDialog {
                 case 4 -> d.interfaceNumber();
                 case 5 -> d.formatUsagePage();
                 case 6 -> d.formatUsage();
-                case 7 -> d.safeIdentificationStatus();
-                case 8 -> d.safePath();
+                case 7 -> d.formatReportCaps();
+                case 8 -> d.safeIdentificationStatus();
+                case 9 -> d.safePath();
                 default -> "";
             };
         }

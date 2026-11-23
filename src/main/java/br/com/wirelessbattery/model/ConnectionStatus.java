@@ -6,10 +6,14 @@ package br.com.wirelessbattery.model;
 public enum ConnectionStatus {
     CONNECTED("Conectado"),
     CHARGING("Carregando"),
-    ASLEEP("Em repouso"),
+    ASLEEP("Em repouso confirmado"),
+    NO_RESPONSE("Receptor conectado, sem resposta"),
+    OPEN_FAILED("Falha ao abrir interface HID"),
+    READ_FAILED("Falha de leitura"),
+    TIMEOUT("Timeout de leitura"),
     DISCONNECTED("Desconectado"),
-    BATTERY_UNAVAILABLE("Bateria indisponível"),
-    PENDING_PROTOCOL("Protocolo não implementado"),
+    BATTERY_UNAVAILABLE("Leitura indisponível"),
+    PENDING_PROTOCOL("Leitura indisponível"),
     ERROR("Erro de leitura");
 
     private final String label;
@@ -24,5 +28,18 @@ public enum ConnectionStatus {
 
     public boolean isOnline() {
         return this == CONNECTED || this == CHARGING;
+    }
+
+    /**
+     * Indica estados em que o receptor/dispositivo físico está presente, mas sem leitura atual de bateria.
+     */
+    public boolean isReceiverDetectedState() {
+        return isOnline()
+                || this == ASLEEP
+                || this == NO_RESPONSE
+                || this == OPEN_FAILED
+                || this == READ_FAILED
+                || this == TIMEOUT
+                || this == BATTERY_UNAVAILABLE;
     }
 }

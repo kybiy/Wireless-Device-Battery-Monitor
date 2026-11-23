@@ -109,7 +109,8 @@ public final class DeviceCardPanel extends JPanel {
             percentLabel.setText(pct + "%");
             chargingIconLabel.setVisible(reading.charging());
             animateProgressTo(pct);
-        } else if (reading.hasLastKnownPercent()) {
+        } else if (reading.hasLastKnownPercent()
+                && (reading.status() == ConnectionStatus.ASLEEP || reading.status() == ConnectionStatus.DISCONNECTED)) {
             int last = reading.lastKnownPercent();
             percentLabel.setText(last + "%");
             chargingIconLabel.setVisible(false);
@@ -133,9 +134,12 @@ public final class DeviceCardPanel extends JPanel {
             case ASLEEP -> r.hasLastKnownPercent()
                     ? "Em repouso · Última leitura"
                     : "Em repouso · " + via;
-            case PENDING_PROTOCOL -> "Protocolo pendente · " + via;
-            case BATTERY_UNAVAILABLE -> "Bateria indisponível · " + via;
-            case ERROR -> "Falha de leitura · " + via;
+            case NO_RESPONSE -> "Receptor conectado, sem resposta · " + via;
+            case OPEN_FAILED -> "Falha ao abrir interface HID · " + via;
+            case READ_FAILED -> "Falha de leitura · " + via;
+            case TIMEOUT -> "Timeout de leitura · " + via;
+            case PENDING_PROTOCOL, BATTERY_UNAVAILABLE -> "Leitura indisponível";
+            case ERROR -> "Erro de leitura · " + via;
             case DISCONNECTED -> r.hasLastKnownPercent()
                     ? "Desconectado · Última às " + (r.lastKnownAt() != null ? r.lastKnownAt().format(TIME_FMT) : "--:--")
                     : "Desconectado · " + via;
