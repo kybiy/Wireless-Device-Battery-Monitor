@@ -72,7 +72,54 @@ class DeluxM800ProProtocolTest {
     }
 
     @Test
-    void returnsNullWhenBatteryByteIsZeroOrOutOfRange() {
+    void parsesSimulated78PercentDischargingAndChargingSeparately() {
+        byte[] dischargingPayload = new byte[32];
+        dischargingPayload[17] = 78;
+        dischargingPayload[18] = 0;
+
+        DeluxM800ProProtocol.ParsedBattery discharging =
+                DeluxM800ProProtocol.parseHid4JavaFeaturePayload(dischargingPayload, 33);
+        assertNotNull(discharging);
+        assertEquals(78, discharging.percent());
+        assertFalse(discharging.charging());
+
+        byte[] chargingPayload = new byte[32];
+        chargingPayload[17] = 78;
+        chargingPayload[18] = 1;
+
+        DeluxM800ProProtocol.ParsedBattery charging =
+                DeluxM800ProProtocol.parseHid4JavaFeaturePayload(chargingPayload, 33);
+        assertNotNull(charging);
+        assertEquals(78, charging.percent());
+        assertTrue(charging.charging());
+    }
+
+    @Test
+    void parsesSimulated100PercentDischargingAndCharging() {
+        byte[] fullDischarging = new byte[32];
+        fullDischarging[17] = 100;
+        fullDischarging[18] = 0;
+
+        DeluxM800ProProtocol.ParsedBattery parsedDischarging =
+                DeluxM800ProProtocol.parseHid4JavaFeaturePayload(fullDischarging, 33);
+        assertNotNull(parsedDischarging);
+        assertEquals(100, parsedDischarging.percent());
+        assertFalse(parsedDischarging.charging());
+
+        byte[] fullCharging = new byte[33];
+        fullCharging[0] = DeluxM800ProProtocol.FEATURE_REPORT_ID;
+        fullCharging[18] = 100;
+        fullCharging[19] = 1;
+
+        DeluxM800ProProtocol.ParsedBattery parsedCharging =
+                DeluxM800ProProtocol.parseFeatureResponse(fullCharging, fullCharging.length);
+        assertNotNull(parsedCharging);
+        assertEquals(100, parsedCharging.percent());
+        assertTrue(parsedCharging.charging());
+    }
+
+    @Test
+    void rejectsRawValue101AndInvalidResponses() {
         byte[] empty = new byte[33];
         empty[0] = DeluxM800ProProtocol.FEATURE_REPORT_ID;
         assertNull(DeluxM800ProProtocol.parseFeatureResponse(empty, empty.length));
@@ -81,6 +128,24 @@ class DeluxM800ProProtocolTest {
         invalid[0] = DeluxM800ProProtocol.FEATURE_REPORT_ID;
         invalid[18] = (byte) 200;
         assertNull(DeluxM800ProProtocol.parseFeatureResponse(invalid, invalid.length));
+
+        // Valor bruto 101 (0x65) não é aceito como sentinela de carregamento:
+        // apenas percentuais 1..100 são válidos; carregamento é lido do campo próprio.
+        byte[] raw101Full = new byte[33];
+        raw101Full[0] = DeluxM800ProProtocol.FEATURE_REPORT_ID;
+        raw101Full[18] = 101;
+        raw101Full[19] = 0;
+        assertNull(DeluxM800ProProtocol.parseFeatureResponse(raw101Full, raw101Full.length));
+
+        byte[] raw101Payload = new byte[32];
+        raw101Payload[17] = 101;
+        raw101Payload[18] = 1;
+        assertNull(DeluxM800ProProtocol.parseHid4JavaFeaturePayload(raw101Payload, 33));
+
+        // Buffers nulos ou curtos
+        assertNull(DeluxM800ProProtocol.parseHid4JavaFeaturePayload(null, 32));
+        assertNull(DeluxM800ProProtocol.parseHid4JavaFeaturePayload(new byte[10], 10));
+        assertNull(DeluxM800ProProtocol.parseFeatureResponse(new byte[18], 18));
     }
 
     @Test

@@ -12,9 +12,12 @@ import org.hid4java.HidDevice;
 /**
  * Driver para o mouse Delux M800 Pro PAW3395 via hid4java no Windows.
  *
- * Implementação adaptada da consulta de bateria de {@code xb-bx/m800-pro-driver}
- * usando apenas HID Feature Reports (somente leitura). Ainda requer validação em
- * hardware real no Windows antes de ser considerada confirmada.
+ * Implementação Java somente-leitura via HID Feature Reports (Report ID 0x0C).
+ * Os parâmetros técnicos de interoperabilidade HID (VID/PID, relatório 0x0C e offsets de
+ * bateria/carregamento) foram consultados a partir da referência pública
+ * {@code xb-bx/m800-pro-driver}. A leitura percentual (ex.: 78%) foi confirmada em
+ * hardware real no Windows; o estado de carregamento e a leitura em 100% ainda
+ * precisam ser validados no hardware real.
  */
 public final class DeluxM800Pro implements BatteryDevice {
     public static final String DEVICE_ID = "delux-m800-pro";
@@ -362,8 +365,8 @@ public final class DeluxM800Pro implements BatteryDevice {
                     return new QueryOutcome(QueryOutcomeType.SUCCESS, parsed, wired, detail);
                 }
 
-                if (lastRawBattery > 100 && lastRawBattery != DeluxM800ProProtocol.BATTERY_CHARGING_SENTINEL) {
-                    String err = String.format("Valor de bateria fora da faixa em payload[17]=0x%02X (%d), charging=%d, payload=[%s]",
+                if (lastRawBattery > DeluxM800ProProtocol.MAX_VALID_BATTERY_PERCENT) {
+                    String err = String.format("Valor de bateria fora da faixa 1..100 em payload[17]=0x%02X (%d), charging=%d, payload=[%s]",
                             lastRawBattery, lastRawBattery, lastRawCharging, lastHexPreview);
                     logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, reportId,
                             "parseFeaturePayload(pkt=" + packetId + ")", "DADOS_INVALIDOS", err, true);
@@ -376,7 +379,7 @@ public final class DeluxM800Pro implements BatteryDevice {
                     config.getMaxAttempts(), lastReadLen, lastRawBattery, lastRawCharging, lastHexPreview
             );
             logger.hidOperation(DISPLAY_NAME, vid, pid, iface, page, usage, reportId,
-                    "initialQuery", "SEM_RESPOSTA", summary, true);
+                    "batteryQuery", "SEM_RESPOSTA", summary, true);
             return new QueryOutcome(
                     QueryOutcomeType.NO_RESPONSE,
                     null,
