@@ -7,7 +7,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -20,7 +22,30 @@ public final class AppSettings {
             System.getProperty("user.home"), ".wireless-battery-java", "settings.properties"
     );
 
+    private static final Set<String> KNOWN_KEYS = Set.of(
+            "startWithWindows",
+            "startMinimized",
+            "minimizeToTray",
+            "pollIntervalSeconds",
+            "darkTheme",
+            "notificationsEnabled",
+            "lowBatteryThreshold",
+            "mediumBatteryThreshold",
+            "displayMode",
+            "simulationEnabled",
+            "showDisconnectedDevices",
+            "taskbarBackgroundPlate",
+            "taskbarIconSize",
+            "taskbarFontSize",
+            "taskbarSpacing",
+            "taskbarOffsetX",
+            "windowX",
+            "windowY",
+            "hiddenDeviceIds"
+    );
+
     private final Path storagePath;
+    private final Map<String, String> extraProperties = new LinkedHashMap<>();
     private boolean startWithWindows = false;
     private boolean startMinimized = false;
     private boolean minimizeToTray = true;
@@ -91,6 +116,13 @@ public final class AppSettings {
                     .filter(s -> !s.isEmpty())
                     .forEach(hiddenDeviceIds::add);
         }
+
+        extraProperties.clear();
+        for (String name : p.stringPropertyNames()) {
+            if (!KNOWN_KEYS.contains(name)) {
+                extraProperties.put(name, p.getProperty(name));
+            }
+        }
     }
 
     public void save() throws IOException {
@@ -99,6 +131,11 @@ public final class AppSettings {
             Files.createDirectories(parent);
         }
         Properties p = new Properties();
+        for (Map.Entry<String, String> entry : extraProperties.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                p.setProperty(entry.getKey(), entry.getValue());
+            }
+        }
         p.setProperty("startWithWindows", Boolean.toString(startWithWindows));
         p.setProperty("startMinimized", Boolean.toString(startMinimized));
         p.setProperty("minimizeToTray", Boolean.toString(minimizeToTray));

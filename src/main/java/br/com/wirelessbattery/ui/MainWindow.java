@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -82,6 +83,7 @@ public final class MainWindow extends JFrame {
     private final TrayDisplayController trayController;
     private final TaskbarWidgetWindow taskbarWidget;
     private final Timer explorerWatchTimer;
+    private final AtomicBoolean uiShuttingDown = new AtomicBoolean(false);
     private long lastKnownTaskbarPeer;
     private List<String> displayedCardIds;
     private Color footerIconColor;
@@ -691,12 +693,26 @@ public final class MainWindow extends JFrame {
         }
     }
 
-    private void exitApplication() {
+    public void releaseUiResourcesForShutdown() {
+        if (!uiShuttingDown.compareAndSet(false, true)) {
+            return;
+        }
         explorerWatchTimer.stop();
         rememberWindowPosition();
         trayController.removeAllIcons();
         taskbarWidget.shutdown();
         dispose();
+    }
+
+    public void requestGracefulExit(String reason) {
+        if (reason != null && !reason.isBlank()) {
+            logger.info("[SHUTDOWN] " + reason);
+        }
+        exitApplication();
+    }
+
+    private void exitApplication() {
+        releaseUiResourcesForShutdown();
         onExitCallback.run();
     }
 

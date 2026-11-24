@@ -125,7 +125,8 @@ public final class WindowsStartupManager {
                                 + "\\" + VALUE_NAME + " = " + readBack);
                         if (isTemporaryBuildPath(command)) {
                             logger.warn("[STARTUP] Atenção: o caminho registrado aponta para uma pasta de build/portátil ("
-                                    + command + "). Instale o WirelessBattery-1.0.0.exe para registrar o caminho definitivo em %LOCALAPPDATA%\\WirelessBattery.");
+                                    + command + "). Instale o WirelessBattery-" + AppVersion.getVersion()
+                                    + ".exe para registrar o caminho definitivo em %LOCALAPPDATA%\\WirelessBattery.");
                         }
                     }
                     return true;

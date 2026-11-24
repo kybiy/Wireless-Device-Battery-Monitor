@@ -175,4 +175,66 @@ class AppSettingsTest {
         assertTrue(content.contains("[STARTUP] Preferência 'Iniciar com o Windows': ATIVADA"));
         assertTrue(content.contains("[STARTUP] Entrada criada e confirmada no registro"));
     }
+
+    @Test
+    void preservesUnknownAndRgbPropertiesAcrossUpgrades(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("settings.properties");
+        java.nio.file.Files.writeString(
+                file,
+                "darkTheme=false\n"
+                        + "rgbLightingEnabled=true\n"
+                        + "rgbColorHex=#00FFAA\n"
+                        + "customFutureSetting=42\n"
+        );
+
+        AppSettings settings = new AppSettings(file);
+        settings.load();
+        assertFalse(settings.isDarkTheme());
+        settings.setDarkTheme(true);
+        settings.save();
+
+        java.util.Properties savedProps = new java.util.Properties();
+        try (var in = java.nio.file.Files.newInputStream(file)) {
+            savedProps.load(in);
+        }
+        assertEquals("true", savedProps.getProperty("darkTheme"));
+        assertEquals("true", savedProps.getProperty("rgbLightingEnabled"));
+        assertEquals("#00FFAA", savedProps.getProperty("rgbColorHex"));
+        assertEquals("42", savedProps.getProperty("customFutureSetting"));
+    }
+
+    @Test
+    void singleInstanceGuardCreatesAndCleansShutdownSignalForInstallerUpgrade(@TempDir Path tempDir) throws Exception {
+        Path lockFile = tempDir.resolve("instance.lock");
+        Path showFile = tempDir.resolve("show.signal");
+        Path shutdownFile = tempDir.resolve("shutdown.signal");
+
+        // Sem instância em execução, requestRunningInstanceShutdown retorna true imediatamente
+        try (SingleInstanceGuard probe = new SingleInstanceGuard(lockFile, showFile, shutdownFile)) {
+            assertTrue(probe.requestRunningInstanceShutdown(300L));
+            assertFalse(java.nio.file.Files.exists(shutdownFile));
+        }
+
+        // Com uma instância ativa que libera a trava ao detectar shutdown.signal
+        SingleInstanceGuard active = new SingleInstanceGuard(lockFile, showFile, shutdownFile);
+        assertTrue(active.tryAcquireOrSignalExisting(false));
+        Thread closer = new Thread(() -> {
+            try {
+                long deadline = System.currentTimeMillis() + 3000L;
+                while (System.currentTimeMillis() < deadline && !java.nio.file.Files.exists(shutdownFile)) {
+                    Thread.sleep(50L);
+                }
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } finally {
+                active.close();
+            }
+        });
+        closer.start();
+
+        SingleInstanceGuard updater = new SingleInstanceGuard(lockFile, showFile, shutdownFile);
+        assertTrue(updater.requestRunningInstanceShutdown(3000L));
+        closer.join(2000L);
+        assertFalse(java.nio.file.Files.exists(shutdownFile));
+    }
 }

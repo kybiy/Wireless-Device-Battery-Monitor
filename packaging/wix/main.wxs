@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <?ifdef JpIsSystemWide ?>
+    <?define JpInstallScope="perMachine"?>
+  <?else?>
+    <?define JpInstallScope="perUser"?>
+  <?endif?>
+
+  <?define JpProductLanguage=1033 ?>
+  <?define JpInstallerVersion=200 ?>
+  <?define JpCompressedMsi=yes ?>
+
+  <?include $(var.JpConfigDir)/overrides.wxi ?>
+
+  <?ifdef JpAllowUpgrades ?>
+    <?define JpUpgradeVersionOnlyDetectUpgrade="no"?>
+    <?define JpUpgradeIncludeMaximum="yes"?>
+  <?else?>
+    <?define JpUpgradeVersionOnlyDetectUpgrade="yes"?>
+    <?define JpUpgradeIncludeMaximum="no"?>
+  <?endif?>
+  <?ifdef JpAllowDowngrades ?>
+    <?define JpUpgradeVersionOnlyDetectDowngrade="no"?>
+    <?define JpDowngradeIncludeMinimum="yes"?>
+  <?else?>
+    <?define JpUpgradeVersionOnlyDetectDowngrade="yes"?>
+    <?define JpDowngradeIncludeMinimum="no"?>
+  <?endif?>
+
+  <Product
+    Id="$(var.JpProductCode)"
+    Name="$(var.JpAppName)"
+    Language="$(var.JpProductLanguage)"
+    Version="$(var.JpAppVersion)"
+    Manufacturer="$(var.JpAppVendor)"
+    UpgradeCode="$(var.JpProductUpgradeCode)">
+
+    <Package
+      Description="$(var.JpAppDescription)"
+      Manufacturer="$(var.JpAppVendor)"
+      InstallerVersion="$(var.JpInstallerVersion)"
+      Compressed="$(var.JpCompressedMsi)"
+      InstallScope="$(var.JpInstallScope)" Platform="x64"
+    />
+
+    <Media Id="1" Cabinet="Data.cab" EmbedCab="yes" />
+
+    <Upgrade Id="$(var.JpProductUpgradeCode)">
+      <UpgradeVersion
+        OnlyDetect="$(var.JpUpgradeVersionOnlyDetectUpgrade)"
+        Property="JP_UPGRADABLE_FOUND"
+        Maximum="$(var.JpAppVersion)"
+        MigrateFeatures="yes"
+        IncludeMaximum="$(var.JpUpgradeIncludeMaximum)" />
+      <UpgradeVersion
+        OnlyDetect="$(var.JpUpgradeVersionOnlyDetectDowngrade)"
+        Property="JP_DOWNGRADABLE_FOUND"
+        Minimum="$(var.JpAppVersion)"
+        MigrateFeatures="no"
+        IncludeMinimum="$(var.JpDowngradeIncludeMinimum)" />
+    </Upgrade>
+
+    <?ifndef JpAllowUpgrades ?>
+    <CustomAction Id="JpDisallowUpgrade" Error="!(loc.DisallowUpgradeErrorMessage)" />
+    <?endif?>
+    <?ifndef JpAllowDowngrades ?>
+    <CustomAction Id="JpDisallowDowngrade" Error="!(loc.DowngradeErrorMessage)" />
+    <?endif?>
+
+    <!-- Detect previous install directory from v1.1.0+ kybiy key or legacy v1.0.0 Henrique keys -->
+    <Property Id="PREVIOUS_INSTALLDIR_PERSISTED">
+      <RegistrySearch Id="SearchPersistedInstallDir"
+                      Root="HKCU"
+                      Key="Software\$(var.JpAppVendor)\$(var.JpAppName)"
+                      Name="InstallDir"
+                      Type="raw" />
+    </Property>
+    <Property Id="PREVIOUS_INSTALLDIR_LEGACY_SHARED">
+      <RegistrySearch Id="SearchLegacyHenriqueSharedDir"
+                      Root="HKCU"
+                      Key="Software\Henrique\$(var.JpAppName)"
+                      Name="InstallDir"
+                      Type="raw" />
+    </Property>
+    <Property Id="PREVIOUS_INSTALLDIR_LEGACY_V100">
+      <RegistrySearch Id="SearchLegacyHenriqueV100Dir"
+                      Root="HKCU"
+                      Key="Software\Henrique\$(var.JpAppName)\1.0.0"
+                      Name="RM_RF48431AECBD69377EA800D62616352F20"
+                      Type="raw" />
+    </Property>
+
+    <!-- Detect existing shortcuts so upgrades preserve user's shortcut choices -->
+    <Property Id="EXISTING_DESKTOP_SHORTCUT">
+      <DirectorySearch Id="SearchExistingDesktopDir" Path="[DesktopFolder]" Depth="0">
+        <FileSearch Id="SearchExistingDesktopLnk" Name="$(var.JpAppName).lnk" />
+      </DirectorySearch>
+    </Property>
+    <Property Id="EXISTING_STARTMENU_SHORTCUT">
+      <DirectorySearch Id="SearchExistingMenuGroupDir" Path="[ProgramMenuFolder]Wireless Battery Monitor" Depth="0">
+        <FileSearch Id="SearchExistingStartMenuLnk" Name="$(var.JpAppName).lnk" />
+      </DirectorySearch>
+    </Property>
+
+    <!-- Optional checkbox on Finish dialog to launch updated application -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchAppAfterInstallLabel)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+
+    <Binary Id="JpCaDll" SourceFile="wixhelper.dll"/>
+    <?ifdef WbCloseHelperPath ?>
+    <Binary Id="WbCloseHelperExe" SourceFile="$(var.WbCloseHelperPath)"/>
+    <?endif?>
+
+    <CustomAction Id="JpFindRelatedProducts" BinaryKey="JpCaDll" DllEntry="FindRelatedProductsEx" />
+    <CustomAction Id="JpRestoreInstallDirLegacyV100" Property="INSTALLDIR" Value="[PREVIOUS_INSTALLDIR_LEGACY_V100]" />
+    <CustomAction Id="JpRestoreInstallDirLegacyShared" Property="INSTALLDIR" Value="[PREVIOUS_INSTALLDIR_LEGACY_SHARED]" />
+    <CustomAction Id="JpRestoreInstallDirPersisted" Property="INSTALLDIR" Value="[PREVIOUS_INSTALLDIR_PERSISTED]" />
+    <CustomAction Id="JpPreserveNoDesktopShortcutOnUpgrade" Property="JP_INSTALL_DESKTOP_SHORTCUT" Value="" />
+    <CustomAction Id="JpPreserveNoStartMenuShortcutOnUpgrade" Property="JP_INSTALL_STARTMENU_SHORTCUT" Value="" />
+    <?ifdef WbCloseHelperPath ?>
+    <!-- Pure Immediate Binary EXE (Type 66) scoped strictly to [INSTALLDIR]: leaves portable copies untouched -->
+    <CustomAction Id="JpGracefulCloseBeforeValidate"
+                  BinaryKey="WbCloseHelperExe"
+                  ExeCommand="--close --dir &quot;[INSTALLDIR].&quot;"
+                  Execute="immediate"
+                  Return="ignore" />
+    <?endif?>
+    <CustomAction Id="JpLaunchAfterInstall"
+                  Directory="INSTALLDIR"
+                  ExeCommand="&quot;[INSTALLDIR]WirelessBattery.exe&quot;"
+                  Return="asyncNoWait"
+                  Impersonate="yes" />
+
+    <!-- Standard required root -->
+    <Directory Id="TARGETDIR" Name="SourceDir"/>
+
+    <!-- Persist version-independent InstallDir for seamless future upgrades -->
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="PersistSharedInstallMetadata" Guid="{91B730F5-5122-4B61-9988-6B52B87D8F14}" Win64="yes">
+        <RegistryKey Root="HKCU" Key="Software\$(var.JpAppVendor)\$(var.JpAppName)">
+          <RegistryValue Type="string" Name="InstallDir" Value="[INSTALLDIR]" KeyPath="yes" />
+          <RegistryValue Type="string" Name="LastInstalledVersion" Value="$(var.JpAppVersion)" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="DefaultFeature" Title="!(loc.MainFeatureTitle)" Level="1">
+      <ComponentRef Id="PersistSharedInstallMetadata"/>
+      <ComponentGroupRef Id="Shortcuts"/>
+      <ComponentGroupRef Id="Files"/>
+      <ComponentGroupRef Id="FileAssociations"/>
+      <ComponentGroupRef Id="FragmentOsCondition"/>
+    </Feature>
+
+    <CustomAction Id="JpSetARPINSTALLLOCATION" Property="ARPINSTALLLOCATION" Value="[INSTALLDIR]" />
+    <CustomAction Id="JpSetARPCOMMENTS" Property="ARPCOMMENTS" Value="$(var.JpAppDescription)" />
+    <CustomAction Id="JpSetARPCONTACT" Property="ARPCONTACT" Value="$(var.JpAppVendor)" />
+    <CustomAction Id="JpSetARPSIZE" Property="ARPSIZE" Value="$(var.JpAppSizeKb)" />
+
+    <?ifdef JpHelpURL ?>
+      <CustomAction Id="JpSetARPHELPLINK" Property="ARPHELPLINK" Value="$(var.JpHelpURL)" />
+    <?endif?>
+
+    <?ifdef JpAboutURL ?>
+      <CustomAction Id="JpSetARPURLINFOABOUT" Property="ARPURLINFOABOUT" Value="$(var.JpAboutURL)" />
+    <?endif?>
+
+    <?ifdef JpUpdateURL ?>
+      <CustomAction Id="JpSetARPURLUPDATEINFO" Property="ARPURLUPDATEINFO" Value="$(var.JpUpdateURL)" />
+    <?endif?>
+
+    <?ifdef JpIcon ?>
+    <Property Id="ARPPRODUCTICON" Value="JpARPPRODUCTICON"/>
+    <Icon Id="JpARPPRODUCTICON" SourceFile="$(var.JpIcon)"/>
+    <?endif?>
+
+    <UIRef Id="JpUI"/>
+
+    <InstallExecuteSequence>
+      <Custom Action="JpFindRelatedProducts" After="FindRelatedProducts"/>
+      <LaunchConditions Before="AppSearch"/>
+      <Custom Action="JpRestoreInstallDirLegacyV100" After="AppSearch">PREVIOUS_INSTALLDIR_LEGACY_V100</Custom>
+      <Custom Action="JpRestoreInstallDirLegacyShared" After="JpRestoreInstallDirLegacyV100">PREVIOUS_INSTALLDIR_LEGACY_SHARED</Custom>
+      <Custom Action="JpRestoreInstallDirPersisted" After="JpRestoreInstallDirLegacyShared">PREVIOUS_INSTALLDIR_PERSISTED</Custom>
+      <Custom Action="JpPreserveNoDesktopShortcutOnUpgrade" After="JpRestoreInstallDirPersisted">JP_UPGRADABLE_FOUND AND NOT EXISTING_DESKTOP_SHORTCUT AND UILevel &lt; 5</Custom>
+      <Custom Action="JpPreserveNoStartMenuShortcutOnUpgrade" After="JpPreserveNoDesktopShortcutOnUpgrade">JP_UPGRADABLE_FOUND AND NOT EXISTING_STARTMENU_SHORTCUT AND UILevel &lt; 5</Custom>
+
+      <Custom Action="JpSetARPINSTALLLOCATION" After="CostFinalize">Not Installed</Custom>
+      <Custom Action="JpSetARPCOMMENTS" After="CostFinalize">Not Installed</Custom>
+      <Custom Action="JpSetARPCONTACT" After="CostFinalize">Not Installed</Custom>
+      <Custom Action="JpSetARPSIZE" After="CostFinalize">Not Installed</Custom>
+      <?ifdef JpHelpURL ?>
+        <Custom Action="JpSetARPHELPLINK" After="CostFinalize">Not Installed</Custom>
+      <?endif?>
+      <?ifdef JpAboutURL ?>
+        <Custom Action="JpSetARPURLINFOABOUT" After="CostFinalize">Not Installed</Custom>
+      <?endif?>
+      <?ifdef JpUpdateURL ?>
+        <Custom Action="JpSetARPURLUPDATEINFO" After="CostFinalize">Not Installed</Custom>
+      <?endif?>
+
+      <?ifndef JpAllowUpgrades ?>
+      <Custom Action="JpDisallowUpgrade" After="JpFindRelatedProducts">JP_UPGRADABLE_FOUND</Custom>
+      <?endif?>
+      <?ifndef JpAllowDowngrades ?>
+      <Custom Action="JpDisallowDowngrade" After="JpFindRelatedProducts">JP_DOWNGRADABLE_FOUND</Custom>
+      <?endif?>
+
+      <?ifdef WbCloseHelperPath ?>
+      <!-- Immediate-only action before InstallValidate: scoped to [INSTALLDIR], avoids MSI 2762 and unlocks files for install/upgrade/repair/uninstall -->
+      <Custom Action="JpGracefulCloseBeforeValidate" Before="InstallValidate">NOT Installed OR REMOVE~="ALL" OR REINSTALL</Custom>
+      <?endif?>
+
+      <!-- Scheduled After InstallInitialize so upgrades run inside an atomic rollback transaction -->
+      <RemoveExistingProducts After="InstallInitialize"/>
+    </InstallExecuteSequence>
+
+    <InstallUISequence>
+      <Custom Action="JpFindRelatedProducts" After="FindRelatedProducts"/>
+      <Custom Action="JpRestoreInstallDirLegacyV100" After="AppSearch">PREVIOUS_INSTALLDIR_LEGACY_V100</Custom>
+      <Custom Action="JpRestoreInstallDirLegacyShared" After="JpRestoreInstallDirLegacyV100">PREVIOUS_INSTALLDIR_LEGACY_SHARED</Custom>
+      <Custom Action="JpRestoreInstallDirPersisted" After="JpRestoreInstallDirLegacyShared">PREVIOUS_INSTALLDIR_PERSISTED</Custom>
+      <Custom Action="JpPreserveNoDesktopShortcutOnUpgrade" After="JpRestoreInstallDirPersisted">JP_UPGRADABLE_FOUND AND NOT EXISTING_DESKTOP_SHORTCUT</Custom>
+      <Custom Action="JpPreserveNoStartMenuShortcutOnUpgrade" After="JpPreserveNoDesktopShortcutOnUpgrade">JP_UPGRADABLE_FOUND AND NOT EXISTING_STARTMENU_SHORTCUT</Custom>
+    </InstallUISequence>
+
+  </Product>
+</Wix>

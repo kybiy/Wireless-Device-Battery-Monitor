@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <Fragment>
+
+    <CustomAction Id="JpCheckInstallDir" BinaryKey="JpCaDll" DllEntry="CheckInstallDir" />
+
+    <UI>
+      <Dialog Id="InstallDirNotEmptyDlg" Width="300" Height="85" Title="!(loc.InstallDirNotEmptyDlg_Title)">
+        <Control Id="Yes" Type="PushButton" X="100" Y="55" Width="50" Height="15" Default="no" Cancel="no" Text="!(loc.WixUIYes)">
+          <Publish Event="NewDialog" Value="$(var.JpAfterInstallDirDlg)">1</Publish>
+        </Control>
+        <Control Id="No" Type="PushButton" X="150" Y="55" Width="50" Height="15" Default="yes" Cancel="yes" Text="!(loc.WixUINo)">
+          <Publish Event="NewDialog" Value="InstallDirDlg">1</Publish>
+        </Control>
+        <Control Id="Text" Type="Text" X="25" Y="15" Width="250" Height="30" TabSkip="no" Text="!(loc.InstallDirNotEmptyDlgInstallDirExistMessage)"/>
+      </Dialog>
+
+      <!-- Direct 1-click Radmin VPN-style upgrade confirmation dialog when previous version is installed -->
+      <Dialog Id="UpgradeConfirmDlg" Width="370" Height="270" Title="!(loc.UpgradeConfirmDlg_Title)" NoMinimize="yes">
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="320" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="!(loc.UpgradeConfirmDlgDescription)" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="300" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="!(loc.UpgradeConfirmDlgTitle)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no"
+                 Text="!(loc.ShortcutPromptDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+
+        <Control Id="UpgradeMessage" Type="Text" X="20" Y="58" Width="330" Height="90" TabSkip="no"
+                 Text="!(loc.UpgradeConfirmDlgMessage)" />
+        <Control Id="UpgradeLocationLabel" Type="Text" X="20" Y="156" Width="330" Height="15" TabSkip="no"
+                 Text="!(loc.UpgradeConfirmDlgInstallDirLabel)" />
+        <Control Id="UpgradeLocationValue" Type="Text" X="20" Y="174" Width="330" Height="32" TabSkip="no" NoPrefix="yes"
+                 Text="[INSTALLDIR]" />
+
+        <Control Id="Update" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes"
+                 Text="!(loc.UpgradeConfirmDlgUpdateButton)">
+          <Publish Event="EndDialog" Value="Return">1</Publish>
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="WelcomeDlg">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes"
+                 Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <!-- When upgrading an existing version, jump directly from WelcomeDlg to UpgradeConfirmDlg -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="UpgradeConfirmDlg" Order="10">JP_UPGRADABLE_FOUND AND NOT Installed</Publish>
+
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction" Value="JpCheckInstallDir" Order="3">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="InstallDirNotEmptyDlg" Order="5">INSTALLDIR_VALID="0" AND NOT JP_UPGRADABLE_FOUND</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="$(var.JpAfterInstallDirDlg)" Order="5">INSTALLDIR_VALID="1" OR JP_UPGRADABLE_FOUND</Publish>
+
+      <!-- Launch application from ExitDialog when optional checkbox remains checked -->
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="JpLaunchAfterInstall">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+
+    </UI>
+  </Fragment>
+</Wix>

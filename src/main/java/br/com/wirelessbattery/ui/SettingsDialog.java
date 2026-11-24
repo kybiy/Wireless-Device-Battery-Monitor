@@ -1,6 +1,7 @@
 package br.com.wirelessbattery.ui;
 
 import br.com.wirelessbattery.config.AppSettings;
+import br.com.wirelessbattery.config.AppVersion;
 import br.com.wirelessbattery.config.DisplayMode;
 import br.com.wirelessbattery.device.BatteryDevice;
 import br.com.wirelessbattery.simulation.SimulationManager;
@@ -62,7 +63,7 @@ public final class SettingsDialog extends JDialog {
             SimulationManager simulationManager,
             boolean openSimulationTab
     ) {
-        super(owner, "Configurações — Wireless Battery", true);
+        super(owner, "Configurações — Wireless Battery v" + AppVersion.getVersion(), true);
         this.settings = settings;
         this.simulationManager = simulationManager;
 

@@ -13,7 +13,9 @@ import java.util.Properties;
  */
 public final class AppVersion {
 
-    private static final String DEFAULT_VERSION = "1.0.0";
+    public static final String APP_VENDOR = "kybiy";
+    public static final String WINDOWS_UPGRADE_UUID = "7c2f4b5e-3d9a-4e8c-91f2-8a6b4d2e1c90";
+    private static final String DEFAULT_VERSION = "1.1.0";
     private static final String DEFAULT_BUILD_TIMESTAMP = "dev";
     private static final String RESOURCE_PATH = "/build-info.properties";
 

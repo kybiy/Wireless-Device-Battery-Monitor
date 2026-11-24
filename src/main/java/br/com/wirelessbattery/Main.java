@@ -19,6 +19,8 @@ import br.com.wirelessbattery.simulation.SimulationManager;
 import br.com.wirelessbattery.ui.MainWindow;
 import br.com.wirelessbattery.ui.ThemeManager;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.SwingUtilities;
 
 /**
@@ -29,9 +31,18 @@ public final class Main {
     private Main() {}
 
     public static void main(String[] args) {
+        boolean argShutdown = Arrays.stream(args).anyMatch(a -> "--shutdown".equalsIgnoreCase(a));
         boolean argMinimized = Arrays.stream(args).anyMatch(a -> "--minimized".equalsIgnoreCase(a));
 
         SingleInstanceGuard instanceGuard = new SingleInstanceGuard();
+        if (argShutdown) {
+            boolean closed = instanceGuard.requestRunningInstanceShutdown(6000L);
+            AppLogger shutdownLogger = new AppLogger();
+            shutdownLogger.info("[STARTUP] Solicitação --shutdown processada (encerrado=" + closed + ").");
+            System.exit(closed ? 0 : 1);
+            return;
+        }
+
         if (!instanceGuard.tryAcquireOrSignalExisting(!argMinimized)) {
             AppLogger duplicateLogger = new AppLogger();
             duplicateLogger.info("[STARTUP] Inicialização ignorada: " + instanceGuard.getLastDiagnosticMessage());
@@ -102,6 +113,34 @@ public final class Main {
 
             logger.info("Drivers registrados: Delux M800 Pro, Akko S9 Ultra e GameSir Cyclone 2.");
 
+            AtomicBoolean servicesClosed = new AtomicBoolean(false);
+            AtomicReference<MainWindow> windowRef = new AtomicReference<>();
+            Runnable closeServicesOnce = () -> {
+                if (!servicesClosed.compareAndSet(false, true)) {
+                    return;
+                }
+                MainWindow win = windowRef.get();
+                if (win != null) {
+                    try {
+                        if (SwingUtilities.isEventDispatchThread()) {
+                            win.releaseUiResourcesForShutdown();
+                        } else {
+                            SwingUtilities.invokeAndWait(win::releaseUiResourcesForShutdown);
+                        }
+                    } catch (Exception ignored) {
+                        // Encerramento em melhor esforço durante hook da JVM
+                    }
+                }
+                deviceManager.close();
+                hidProvider.close();
+                instanceGuard.close();
+            };
+
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                logger.info("[SHUTDOWN] Encerrando recursos com segurança (hook do sistema/atualizador).");
+                closeServicesOnce.run();
+            }, "wireless-battery-shutdown-hook"));
+
             MainWindow window = new MainWindow(
                     settings,
                     themeManager,
@@ -110,13 +149,15 @@ public final class Main {
                     diagnosticsService,
                     logger,
                     () -> {
-                        deviceManager.close();
-                        hidProvider.close();
-                        instanceGuard.close();
+                        closeServicesOnce.run();
                         System.exit(0);
                     }
             );
-            instanceGuard.startActivateListener(window::bringToFront);
+            windowRef.set(window);
+            instanceGuard.startLifecycleListeners(
+                    window::bringToFront,
+                    () -> window.requestGracefulExit("Encerramento seguro solicitado por atualizador/instalador.")
+            );
             deviceManager.startPolling(settings.getPollIntervalSeconds());
 
             boolean startMinimized = argMinimized || settings.isStartMinimized();

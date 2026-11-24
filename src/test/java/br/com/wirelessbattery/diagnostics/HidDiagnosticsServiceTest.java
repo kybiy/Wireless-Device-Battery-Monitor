@@ -98,9 +98,11 @@ class HidDiagnosticsServiceTest {
 
     @Test
     void exposesBuildVersionAndAkkoUnavailableStatusMetadata() {
-        assertEquals("1.0.0", AppVersion.getVersion());
+        assertEquals("1.1.0", AppVersion.getVersion());
+        assertEquals("kybiy", AppVersion.APP_VENDOR);
+        assertEquals("7c2f4b5e-3d9a-4e8c-91f2-8a6b4d2e1c90", AppVersion.WINDOWS_UPGRADE_UUID);
         assertFalse(AppVersion.getBuildTimestamp().isBlank());
-        assertTrue(AppVersion.formatShort().contains("1.0.0"));
+        assertTrue(AppVersion.formatShort().contains("1.1.0"));
         assertTrue(AppVersion.formatStartupInfo().contains("Origem das classes/JAR:"));
 
         assertEquals("Akko S9 Ultra", AkkoVergeS9.DISPLAY_NAME);

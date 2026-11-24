@@ -25,21 +25,36 @@ public final class SingleInstanceGuard implements AutoCloseable {
     );
     private static final Path LOCK_PATH = BASE_DIR.resolve("instance.lock");
     private static final Path SIGNAL_PATH = BASE_DIR.resolve("show.signal");
+    private static final Path SHUTDOWN_SIGNAL_PATH = BASE_DIR.resolve("shutdown.signal");
 
     private final Path lockPath;
     private final Path signalPath;
+    private final Path shutdownSignalPath;
     private FileChannel channel;
     private FileLock lock;
     private Timer signalWatchTimer;
     private String lastDiagnosticMessage = "";
 
     public SingleInstanceGuard() {
-        this(LOCK_PATH, SIGNAL_PATH);
+        this(LOCK_PATH, SIGNAL_PATH, SHUTDOWN_SIGNAL_PATH);
     }
 
     public SingleInstanceGuard(Path lockPath, Path signalPath) {
+        this(
+                lockPath,
+                signalPath,
+                (lockPath.getParent() != null ? lockPath.getParent() : BASE_DIR).resolve("shutdown.signal")
+        );
+    }
+
+    public SingleInstanceGuard(Path lockPath, Path signalPath, Path shutdownSignalPath) {
         this.lockPath = lockPath;
         this.signalPath = signalPath;
+        this.shutdownSignalPath = shutdownSignalPath;
+    }
+
+    public Path getShutdownSignalPath() {
+        return shutdownSignalPath;
     }
 
     public Path getLockPath() {
@@ -93,6 +108,7 @@ public final class SingleInstanceGuard implements AutoCloseable {
                 return false;
             }
             clearSignalFileQuietly();
+            clearShutdownSignalFileQuietly();
             long currentPid = ProcessHandle.current().pid();
             writePidToLockFile(currentPid);
             if (!previousRecordedPid.isEmpty() && !previousRecordedPid.equals(Long.toString(currentPid))) {
@@ -115,17 +131,94 @@ public final class SingleInstanceGuard implements AutoCloseable {
      * tentativa de abertura do executável for detectada.
      */
     public void startActivateListener(Runnable onActivateRequested) {
-        if (onActivateRequested == null || signalWatchTimer != null) {
+        startLifecycleListeners(onActivateRequested, null);
+    }
+
+    /**
+     * Inicia o monitoramento leve na EDT tanto para restauração de janela ({@code show.signal})
+     * quanto para encerramento seguro solicitado por atualizador/instalador ({@code shutdown.signal}).
+     */
+    public void startLifecycleListeners(Runnable onActivateRequested, Runnable onShutdownRequested) {
+        if ((onActivateRequested == null && onShutdownRequested == null) || signalWatchTimer != null) {
             return;
         }
-        signalWatchTimer = new Timer(800, e -> {
-            if (Files.isRegularFile(signalPath)) {
+        signalWatchTimer = new Timer(500, e -> {
+            if (onShutdownRequested != null && Files.isRegularFile(shutdownSignalPath)) {
+                clearShutdownSignalFileQuietly();
+                clearSignalFileQuietly();
+                SwingUtilities.invokeLater(onShutdownRequested);
+                return;
+            }
+            if (onActivateRequested != null && Files.isRegularFile(signalPath)) {
                 clearSignalFileQuietly();
                 SwingUtilities.invokeLater(onActivateRequested);
             }
         });
         signalWatchTimer.setRepeats(true);
         signalWatchTimer.start();
+    }
+
+    /**
+     * Solicita o encerramento seguro de uma instância em execução (via {@code shutdown.signal})
+     * e aguarda até que a trava {@code instance.lock} seja liberada.
+     *
+     * @param timeoutMillis tempo máximo de espera em milissegundos
+     * @return {@code true} se nenhuma instância estiver ativa ao final do prazo
+     */
+    public boolean requestRunningInstanceShutdown(long timeoutMillis) {
+        if (isLockCurrentlyFree()) {
+            clearShutdownSignalFileQuietly();
+            return true;
+        }
+        try {
+            Path parent = shutdownSignalPath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(
+                    shutdownSignalPath,
+                    Long.toString(System.currentTimeMillis()),
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            );
+        } catch (IOException ignored) {
+            // Melhor esforço
+        }
+        long deadline = System.currentTimeMillis() + Math.max(200L, timeoutMillis);
+        while (System.currentTimeMillis() < deadline) {
+            if (isLockCurrentlyFree()) {
+                clearShutdownSignalFileQuietly();
+                return true;
+            }
+            try {
+                Thread.sleep(120L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return isLockCurrentlyFree();
+    }
+
+    private boolean isLockCurrentlyFree() {
+        if (!Files.exists(lockPath)) {
+            return true;
+        }
+        try (FileChannel probe = FileChannel.open(
+                lockPath,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.READ,
+                StandardOpenOption.WRITE
+        )) {
+            try (FileLock probeLock = probe.tryLock()) {
+                return probeLock != null;
+            } catch (OverlappingFileLockException overlap) {
+                return false;
+            }
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private void signalExistingInstance() {
@@ -178,6 +271,14 @@ public final class SingleInstanceGuard implements AutoCloseable {
         }
     }
 
+    private void clearShutdownSignalFileQuietly() {
+        try {
+            Files.deleteIfExists(shutdownSignalPath);
+        } catch (IOException ignored) {
+            // Ignorado
+        }
+    }
+
     private void closeChannelQuietly() {
         if (channel != null) {
             try {
@@ -197,6 +298,7 @@ public final class SingleInstanceGuard implements AutoCloseable {
         }
         if (lock != null) {
             clearSignalFileQuietly();
+            clearShutdownSignalFileQuietly();
             try {
                 lock.release();
             } catch (IOException ignored) {
