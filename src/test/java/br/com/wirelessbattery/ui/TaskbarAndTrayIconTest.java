@@ -17,6 +17,167 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class TaskbarAndTrayIconTest {
+    @Test
+    void widgetStaysVerticallyCenteredInsideTaskbar() {
+        assertEquals(1045, TaskbarWidgetWindow.widgetTop(1040, 40, 30));
+        assertEquals(1049, TaskbarWidgetWindow.widgetTop(1040, 48, 30));
+    }
+
+    @Test
+    void shellWindowsDoNotSwitchWidgetToSystemTray() {
+        assertFalse(WindowsTaskbarLocator.useShellIndicators("Progman"));
+        assertFalse(WindowsTaskbarLocator.useShellIndicators("WorkerW"));
+        assertFalse(WindowsTaskbarLocator.useShellIndicators("TopLevelWindowForOverflowXamlIsland"));
+        assertFalse(WindowsTaskbarLocator.useShellIndicators("NotifyIconOverflowWindow"));
+        assertFalse(WindowsTaskbarLocator.useShellIndicators("MultitaskingViewFrame"));
+        assertFalse(WindowsTaskbarLocator.useShellIndicators("Shell_TrayWnd"));
+        assertFalse(WindowsTaskbarLocator.useShellIndicators("Notepad"));
+    }
+
+    @Test
+    void svgIconFactoryCachesInstancesByIconSizeAndColor() {
+        var icon1 = DeviceIconFactory.createSvgIcon(DeviceIconFactory.IconName.MOUSE, 18, DeviceIconFactory.COLOR_HIGH);
+        var icon2 = DeviceIconFactory.createSvgIcon(DeviceIconFactory.IconName.MOUSE, 18, DeviceIconFactory.COLOR_HIGH);
+        var iconDifferentColor = DeviceIconFactory.createSvgIcon(DeviceIconFactory.IconName.MOUSE, 18, DeviceIconFactory.COLOR_LOW);
+        assertSame(icon1, icon2);
+        assertNotSame(icon1, iconDifferentColor);
+    }
+
+    @Test
+    void premultipliedBgraAppliesHitTestAlphaAndScalesChannels() {
+        int[] src = {
+                0x00000000, // totalmente transparente -> 0x01000000 (hit-test)
+                0xFF204080, // opaco -> inalterado
+                0x80FF0000  // 50% vermelho -> R ~= 128
+        };
+        int[] out = NativeTaskbarWidget.toPremultipliedBgraWithHitTestAlpha(src);
+        assertEquals(0x01000000, out[0]);
+        assertEquals(0xFF204080, out[1]);
+        assertEquals(0x80, (out[2] >>> 24) & 0xFF);
+        int pr = (out[2] >>> 16) & 0xFF;
+        assertTrue(pr >= 127 && pr <= 129, "Canal vermelho pré-multiplicado: " + pr);
+    }
+
+    @Test
+    void nativeWidgetCreatesLayeredChildWindowAndFreesGdiUserHandlesOnWindows() {
+        if (!WindowsTaskbarLocator.isWindows()) {
+            return;
+        }
+        AppSettings settings = new AppSettings();
+        var logger = new br.com.wirelessbattery.diagnostics.AppLogger();
+        var sim = new br.com.wirelessbattery.simulation.SimulationManager(logger);
+        sim.setEnabled(true);
+        List<DeviceReading> items = sim.getCurrentReadings();
+
+        var hInst = com.sun.jna.platform.win32.Kernel32.INSTANCE.GetModuleHandle(null);
+        var parent = com.sun.jna.platform.win32.User32.INSTANCE.CreateWindowEx(
+                0, "STATIC", "TestTaskbarHost", 0x80000000, // WS_POPUP
+                0, 0, 400, 40, null, null, hInst, null
+        );
+        assertNotNull(parent, "Janela pai Win32 de teste deve ser criada");
+        try {
+            var widget = new NativeTaskbarWidget(settings, logger, () -> {}, () -> {}, () -> {}, () -> {});
+            // Primeiro ciclo aquece classes/fontes
+            assertTrue(widget.verifyChildCreationAndRenderOnCurrentThread(parent, items),
+                    "WS_CHILD + WS_EX_LAYERED + UpdateLayeredWindow deve ter sucesso na janela pai");
+
+            int gdiBefore = NativeTaskbarWidget.getProcessGuiResources(0); // GR_GDIOBJECTS
+            int userBefore = NativeTaskbarWidget.getProcessGuiResources(1); // GR_USEROBJECTS
+
+            for (int i = 0; i < 20; i++) {
+                assertTrue(widget.verifyChildCreationAndRenderOnCurrentThread(parent, items));
+            }
+
+            int gdiAfter = NativeTaskbarWidget.getProcessGuiResources(0);
+            int userAfter = NativeTaskbarWidget.getProcessGuiResources(1);
+
+            assertTrue(Math.abs(gdiAfter - gdiBefore) <= 2,
+                    "Sem vazamento de handles GDI após 20 ciclos: before=" + gdiBefore + " after=" + gdiAfter);
+            assertEquals(userBefore, userAfter,
+                    "Sem vazamento de handles USER após 20 ciclos: before=" + userBefore + " after=" + userAfter);
+        } finally {
+            com.sun.jna.platform.win32.User32.INSTANCE.DestroyWindow(parent);
+        }
+    }
+
+    @Test
+    void realAndSimulatedReadingsShareSameNativeBackendAndDiagnosticPipeline() throws Exception {
+        if (!WindowsTaskbarLocator.isWindows()) {
+            return;
+        }
+        AppSettings settings = new AppSettings();
+        ThemeManager theme = new ThemeManager();
+        var logger = new br.com.wirelessbattery.diagnostics.AppLogger();
+        var sim = new br.com.wirelessbattery.simulation.SimulationManager(logger);
+        sim.setEnabled(true);
+
+        List<DeviceReading> simulatedItems = sim.getCurrentReadings();
+        List<DeviceReading> realItems = List.of(
+                DeviceReading.realConnected("delux-m800-pro", "Delux M800 Pro", DeviceType.MOUSE, 78, false, "2.4 GHz", "OK"),
+                DeviceReading.realConnected("akko-verge-s9", "Akko S9 Ultra", DeviceType.HEADSET, 62, false, "2.4 GHz", "OK"),
+                DeviceReading.realConnected("gamesir-cyclone-2", "GameSir Cyclone 2", DeviceType.GAMEPAD, 90, false, "2.4 GHz", "OK")
+        );
+
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            TaskbarWidgetWindow widgetWindow = new TaskbarWidgetWindow(
+                    settings, theme, logger, () -> {}, () -> {}, () -> {}, () -> {}
+            );
+            try {
+                assertEquals("NATIVE", widgetWindow.getRequestedBackendName());
+                assertEquals("NATIVE", widgetWindow.getEffectiveBackendName());
+                assertEquals("nenhum", widgetWindow.getFallbackReason());
+
+                widgetWindow.updateReadings(realItems);
+                assertEquals("NATIVE", widgetWindow.getEffectiveBackendName());
+                assertEquals(3, widgetWindow.getCurrentItems().size());
+                String realDiag = widgetWindow.formatDiagnosticSummary(false, 3, 0);
+                assertTrue(realDiag.contains("modo=REAL"));
+                assertTrue(realDiag.contains("backendSolicitado=NATIVE"));
+                assertTrue(realDiag.contains("backendEfetivo=NATIVE"));
+
+                widgetWindow.updateReadings(simulatedItems);
+                assertEquals("NATIVE", widgetWindow.getEffectiveBackendName());
+                assertEquals(3, widgetWindow.getCurrentItems().size());
+                String simDiag = widgetWindow.formatDiagnosticSummary(true, 0, 3);
+                assertTrue(simDiag.contains("modo=SIMULACAO"));
+                assertTrue(simDiag.contains("backendSolicitado=NATIVE"));
+                assertTrue(simDiag.contains("backendEfetivo=NATIVE"));
+            } finally {
+                widgetWindow.shutdown();
+            }
+        });
+
+        var hInst = com.sun.jna.platform.win32.Kernel32.INSTANCE.GetModuleHandle(null);
+        var parent = com.sun.jna.platform.win32.User32.INSTANCE.CreateWindowEx(
+                0, "STATIC", "TestTaskbarHostDual", 0x80000000,
+                0, 0, 400, 40, null, null, hInst, null
+        );
+        assertNotNull(parent);
+        try {
+            var nativeWidget = new NativeTaskbarWidget(settings, logger, () -> {}, () -> {}, () -> {}, () -> {});
+            assertTrue(nativeWidget.verifyChildCreationAndRenderOnCurrentThread(parent, realItems));
+            assertTrue(nativeWidget.getLastRenderStatus().contains("modo=REAL"));
+
+            assertTrue(nativeWidget.verifyChildCreationAndRenderOnCurrentThread(parent, simulatedItems));
+            assertTrue(nativeWidget.getLastRenderStatus().contains("modo=SIMULACAO"));
+        } finally {
+            com.sun.jna.platform.win32.User32.INSTANCE.DestroyWindow(parent);
+        }
+    }
+
+    @Test
+    void diagnosticsKeepRecentLinesAfterMultilineMessages() throws Exception {
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            var area = new javax.swing.JTextArea();
+            int limit = br.com.wirelessbattery.diagnostics.AppLogger.MAX_ENTRIES;
+            for (int i = 0; i < limit; i++) HidDiagnosticsDialog.appendRecentLog(area, "entry-" + i);
+            HidDiagnosticsDialog.appendRecentLog(area, "first\nsecond");
+            assertEquals(limit + 1, area.getLineCount());
+            assertTrue(area.getText().startsWith("entry-2\n"));
+            assertTrue(area.getText().endsWith("first\nsecond\n"));
+        });
+    }
+
 
     @Test
     void trayIconsUseActualDeviceTypeAndSeparateRealFromSimulated(@TempDir Path tempDir) {

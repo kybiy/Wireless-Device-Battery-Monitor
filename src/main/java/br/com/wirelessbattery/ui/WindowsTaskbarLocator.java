@@ -10,6 +10,7 @@ import com.sun.jna.platform.win32.WinDef.DWORD;
 import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinDef.RECT;
 import com.sun.jna.platform.win32.WinDef.UINT_PTR;
+import com.sun.jna.platform.win32.WinNT.HANDLE;
 import com.sun.jna.platform.win32.WinReg;
 import com.sun.jna.platform.win32.WinUser;
 import com.sun.jna.ptr.IntByReference;
@@ -44,12 +45,26 @@ public final class WindowsTaskbarLocator {
     private static final int ABS_AUTOHIDE = 0x1;
 
     private static final HWND HWND_TOPMOST = new HWND(Pointer.createConstant(-1L));
+    private static final int WS_EX_TOOLWINDOW = 0x00000080;
+    private static final int WS_EX_APPWINDOW = 0x00040000;
+    private static final int WS_EX_NOACTIVATE = 0x08000000;
+    private static final int SWP_FRAMECHANGED = 0x0020;
+
+    private static final int EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private static final int EVENT_SYSTEM_SWITCHEND = 0x0015;
+    private static final int EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+    private static final int EVENT_SYSTEM_MINIMIZEEND = 0x0017;
+    private static final int WINEVENT_OUTOFCONTEXT = 0x0000;
+    private static final int WINEVENT_SKIPOWNPROCESS = 0x0002;
+
     private static final Set<String> SHELL_WINDOW_CLASSES = Set.of(
             "Shell_TrayWnd",
             "Shell_SecondaryTrayWnd",
             "Progman",
             "WorkerW",
             "NotifyIconOverflowWindow",
+            "TopLevelWindowForOverflowXamlIsland",
+            "MultitaskingViewFrame",
             "Windows.UI.Core.CoreWindow"
     );
 
@@ -109,11 +124,23 @@ public final class WindowsTaskbarLocator {
         return 16;
     }
 
+    /** Identidade do Explorer, independente de tela cheia, DPI e auto-hide. */
+    public static long taskbarPeer() {
+        if (!isWindows()) return 0;
+        try {
+            HWND taskbar = User32.INSTANCE.FindWindow("Shell_TrayWnd", null);
+            return taskbar == null ? 0 : Pointer.nativeValue(taskbar.getPointer());
+        } catch (RuntimeException | LinkageError unavailable) {
+            return 0;
+        }
+    }
+
     /**
-     * Reafirma a ordem Z apenas da própria janela de widget acima da barra de tarefas
-     * sem alterar foco nem modificar janelas do sistema.
+     * Aplica estilos estendidos Win32 documentados apenas na própria janela do widget
+     * ({@code WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE}, removendo {@code WS_EX_APPWINDOW})
+     * para garantir que nunca apareça no Alt+Tab nem roube foco ao ser clicada.
      */
-    public static void keepAboveTaskbar(Window window) {
+    public static void applyWidgetWindowStyles(Window window) {
         if (!isWindows() || window == null || !window.isDisplayable()) {
             return;
         }
@@ -122,15 +149,127 @@ public final class WindowsTaskbarLocator {
             if (ptr == null) {
                 return;
             }
+            HWND hwnd = new HWND(ptr);
+            int exStyle = User32.INSTANCE.GetWindowLong(hwnd, WinUser.GWL_EXSTYLE);
+            int desired = (exStyle | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW;
+            if (desired != exStyle) {
+                User32.INSTANCE.SetWindowLong(hwnd, WinUser.GWL_EXSTYLE, desired);
+                User32.INSTANCE.SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0, 0, 0, 0,
+                        WinUser.SWP_NOMOVE | WinUser.SWP_NOSIZE | WinUser.SWP_NOACTIVATE | SWP_FRAMECHANGED
+                );
+            }
+        } catch (RuntimeException | LinkageError ignored) {
+            // Mantém comportamento padrão do Swing caso JNA não esteja disponível
+        }
+    }
+
+    /**
+     * Reafirma a ordem Z da própria janela de widget apenas quando {@code Shell_TrayWnd}
+     * passou à frente dela (ex.: após Win+D, Alt+Tab ou clique na barra de tarefas),
+     * sem mover o widget, sem roubar foco e sem modificar janelas do Explorer.
+     */
+    public static boolean keepAboveTaskbarIfCovered(Window widget, long taskbarPeer) {
+        if (!isWindows() || widget == null || !widget.isDisplayable() || !widget.isShowing()) {
+            return false;
+        }
+        if (!taskbarAbove(widget, taskbarPeer)) {
+            return false;
+        }
+        try {
+            Pointer ptr = Native.getComponentPointer(widget);
+            if (ptr == null) {
+                return false;
+            }
             User32.INSTANCE.SetWindowPos(
                     new HWND(ptr),
                     HWND_TOPMOST,
                     0, 0, 0, 0,
                     WinUser.SWP_NOMOVE | WinUser.SWP_NOSIZE | WinUser.SWP_NOACTIVATE
             );
-        } catch (Throwable ignored) {
-            // Mantém fluxo normal em caso de ambiente restrito
+            return true;
+        } catch (RuntimeException | LinkageError ignored) {
+            return false;
         }
+    }
+
+    /**
+     * Registra um hook Win32 documentado ({@code SetWinEventHook}, {@code WINEVENT_OUTOFCONTEXT})
+     * para reagir imediatamente a mudanças de foreground, Alt+Tab e Show Desktop (Win+D),
+     * sem depender apenas de polling lento. Retorna um {@link AutoCloseable} para desinstalar o hook.
+     */
+    public static AutoCloseable registerShellFocusHook(Runnable onShellTransition) {
+        if (!isWindows() || onShellTransition == null) {
+            return () -> {};
+        }
+        try {
+            WinUser.WinEventProc callback = (hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, dwmsEventTime) -> {
+                int ev = event != null ? event.intValue() : 0;
+                if (ev == EVENT_SYSTEM_FOREGROUND
+                        || ev == EVENT_SYSTEM_SWITCHEND
+                        || ev == EVENT_SYSTEM_MINIMIZESTART
+                        || ev == EVENT_SYSTEM_MINIMIZEEND) {
+                    onShellTransition.run();
+                }
+            };
+            HANDLE hookFg = User32.INSTANCE.SetWinEventHook(
+                    EVENT_SYSTEM_FOREGROUND,
+                    EVENT_SYSTEM_FOREGROUND,
+                    null,
+                    callback,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+            );
+            HANDLE hookSwitchMin = User32.INSTANCE.SetWinEventHook(
+                    EVENT_SYSTEM_SWITCHEND,
+                    EVENT_SYSTEM_MINIMIZEEND,
+                    null,
+                    callback,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+            );
+            return () -> {
+                // Mantém referência forte ao callback até o unhook
+                if (hookFg != null) {
+                    User32.INSTANCE.UnhookWinEvent(hookFg);
+                }
+                if (hookSwitchMin != null) {
+                    User32.INSTANCE.UnhookWinEvent(hookSwitchMin);
+                }
+                callback.hashCode();
+            };
+        } catch (RuntimeException | LinkageError ignored) {
+            return () -> {};
+        }
+    }
+
+    /** EnumWindows visits top-level windows in Z order. Stop at the first of the pair. */
+    static boolean taskbarAbove(java.awt.Window widget, long taskbarPeer) {
+        if (!widget.isShowing() || taskbarPeer == 0) return false;
+        try {
+            Pointer ptr = Native.getComponentPointer(widget);
+            if (ptr == null) return false;
+            long widgetPeer = Pointer.nativeValue(ptr);
+            boolean[] covered = {false};
+            User32.INSTANCE.EnumWindows((window, ignored) -> {
+                long peer = Pointer.nativeValue(window.getPointer());
+                if (peer == taskbarPeer) covered[0] = true;
+                return peer != taskbarPeer && peer != widgetPeer;
+            }, null);
+            return covered[0];
+        } catch (RuntimeException | LinkageError unavailable) {
+            return false;
+        }
+    }
+
+    static boolean useShellIndicators(String foregroundClass) {
+        // Não transfere automaticamente o widget personalizado para o SystemTray
+        // durante interações normais com o Shell (Win+D, Alt+Tab, bandeja).
+        return false;
     }
 
     public static boolean isFullscreenOrBusy() {
@@ -151,7 +290,7 @@ public final class WindowsTaskbarLocator {
         return false;
     }
 
-    private static boolean isForegroundWindowFullscreen(HWND taskbar, Rectangle monitorPhysBounds) {
+    private static boolean shouldYieldToForeground(HWND taskbar, Rectangle monitorPhysBounds) {
         if (monitorPhysBounds == null) {
             return false;
         }
@@ -164,7 +303,8 @@ public final class WindowsTaskbarLocator {
             int len = User32.INSTANCE.GetClassName(fg, buf, buf.length);
             if (len > 0) {
                 String cls = new String(buf, 0, len);
-                if (SHELL_WINDOW_CLASSES.contains(cls)) {
+                if (useShellIndicators(cls)) return true;
+                if ("MultitaskingViewFrame".equals(cls) || SHELL_WINDOW_CLASSES.contains(cls)) {
                     return false;
                 }
             }
@@ -229,7 +369,7 @@ public final class WindowsTaskbarLocator {
                     scaleY = tx.getScaleY();
                 }
                 Rectangle physicalBounds = computePhysicalBounds(gc);
-                if (isForegroundWindowFullscreen(taskbar, physicalBounds)) {
+                if (shouldYieldToForeground(taskbar, physicalBounds)) {
                     return Optional.empty();
                 }
                 if (autoHide) {

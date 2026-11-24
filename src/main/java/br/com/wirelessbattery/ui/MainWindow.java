@@ -83,9 +83,12 @@ public final class MainWindow extends JFrame {
     private final TaskbarWidgetWindow taskbarWidget;
     private final Timer explorerWatchTimer;
     private long lastKnownTaskbarPeer;
+    private List<String> displayedCardIds;
+    private Color footerIconColor;
     private boolean minimizedBootPending;
     private int minimizedBootRetryCount;
     private String lastUiSummary;
+    private String lastWidgetDiagSummary;
 
     public MainWindow(
             AppSettings settings,
@@ -131,15 +134,14 @@ public final class MainWindow extends JFrame {
         this.taskbarWidget = new TaskbarWidgetWindow(
                 settings,
                 themeManager,
+                logger,
                 this::restoreFromTray,
                 deviceManager::refreshNow,
                 () -> openSettingsDialog(false),
                 this::exitApplication
         );
         this.taskbarWidget.setOnAvailabilityChanged(this::syncExternalIndicators);
-        this.lastKnownTaskbarPeer = WindowsTaskbarLocator.findTaskbarAnchor()
-                .map(WindowsTaskbarLocator.TaskbarAnchor::taskbarHwndPeer)
-                .orElse(0L);
+        this.lastKnownTaskbarPeer = WindowsTaskbarLocator.taskbarPeer();
         this.explorerWatchTimer = new Timer(2000, e -> checkExplorerAndIndicatorsState());
         this.explorerWatchTimer.setRepeats(true);
         this.explorerWatchTimer.start();
@@ -308,9 +310,15 @@ public final class MainWindow extends JFrame {
             }
         }
 
-        cardsListPanel.removeAll();
+        List<String> ids = activeList.stream().map(DeviceReading::deviceId).toList();
+        boolean layoutChanged = !ids.equals(displayedCardIds);
+        if (layoutChanged) {
+            displayedCardIds = ids;
+            cardMap.keySet().retainAll(ids);
+            cardsListPanel.removeAll();
+        }
         if (activeList.isEmpty()) {
-            cardsListPanel.add(buildEmptyStatePanel());
+            if (layoutChanged) cardsListPanel.add(buildEmptyStatePanel());
         } else {
             for (int i = 0; i < activeList.size(); i++) {
                 DeviceReading reading = activeList.get(i);
@@ -321,6 +329,7 @@ public final class MainWindow extends JFrame {
                 } else {
                     card.updateReading(reading);
                 }
+                if (!layoutChanged) continue;
                 cardsListPanel.add(card);
                 if (i < activeList.size() - 1) {
                     cardsListPanel.add(Box.createVerticalStrut(10));
@@ -331,8 +340,10 @@ public final class MainWindow extends JFrame {
         logUiSummaryIfChanged(activeList, simActive);
         updateFooterSummary(activeList);
         syncExternalIndicators();
-        cardsListPanel.revalidate();
-        cardsListPanel.repaint();
+        if (layoutChanged) {
+            cardsListPanel.revalidate();
+            cardsListPanel.repaint();
+        }
     }
 
     private void logUiSummaryIfChanged(List<DeviceReading> activeList, boolean simActive) {
@@ -424,9 +435,12 @@ public final class MainWindow extends JFrame {
         String label = count == 1 ? "1 dispositivo" : count + " dispositivos";
         deviceCountLabel.setText(label);
         Color checkColor = count > 0 ? DeviceIconFactory.COLOR_HIGH : themeManager.mutedText();
-        deviceCountLabel.setIcon(DeviceIconFactory.createSvgIcon(
-                DeviceIconFactory.IconName.CHECK_CIRCLE, 14, checkColor
-        ));
+        if (!checkColor.equals(footerIconColor)) {
+            footerIconColor = checkColor;
+            deviceCountLabel.setIcon(DeviceIconFactory.createSvgIcon(
+                    DeviceIconFactory.IconName.CHECK_CIRCLE, 14, checkColor
+            ));
+        }
     }
 
     private void syncExternalIndicators() {
@@ -457,6 +471,13 @@ public final class MainWindow extends JFrame {
         if (wantTaskbar) {
             taskbarWidget.updateReadings(indicatorItems);
             taskbarWidget.setWidgetEnabled(true);
+            boolean usingSim = !anyRealDetected && simulationManager.isEnabled();
+            int simCount = simulationManager.isEnabled() ? simulationManager.getCurrentReadings().size() : 0;
+            String diag = taskbarWidget.formatDiagnosticSummary(usingSim, visibleReal.size(), simCount);
+            if (!diag.equals(lastWidgetDiagSummary)) {
+                lastWidgetDiagSummary = diag;
+                logger.info(diag);
+            }
             if (!taskbarWidget.isVisible()) {
                 wantTray = true;
             }
@@ -521,6 +542,7 @@ public final class MainWindow extends JFrame {
     }
 
     private void applyThemePalette() {
+        displayedCardIds = null;
         rootPanel.setBackground(themeManager.windowBackground());
         headerBatteryIcon.setIcon(DeviceIconFactory.createSvgIcon(
                 DeviceIconFactory.IconName.BATTERY, 20, themeManager.accentColor()
@@ -602,9 +624,7 @@ public final class MainWindow extends JFrame {
     }
 
     private void checkExplorerAndIndicatorsState() {
-        long currentPeer = WindowsTaskbarLocator.findTaskbarAnchor()
-                .map(WindowsTaskbarLocator.TaskbarAnchor::taskbarHwndPeer)
-                .orElse(0L);
+        long currentPeer = WindowsTaskbarLocator.taskbarPeer();
         if (currentPeer != 0L && currentPeer != lastKnownTaskbarPeer) {
             boolean wasRestart = (lastKnownTaskbarPeer != 0L);
             lastKnownTaskbarPeer = currentPeer;

@@ -1,6 +1,7 @@
 package br.com.wirelessbattery.ui;
 
 import br.com.wirelessbattery.config.AppSettings;
+import br.com.wirelessbattery.diagnostics.AppLogger;
 import br.com.wirelessbattery.model.DeviceReading;
 import br.com.wirelessbattery.model.DeviceType;
 import java.awt.Color;
@@ -34,6 +35,7 @@ import javax.swing.Timer;
  * (cache de assinatura visual e geometria) e detecção de reinicialização do Explorer.
  */
 public final class TaskbarWidgetWindow extends JWindow {
+    public static final String BACKEND_PROPERTY = "wirelessbattery.taskbar.backend";
     private static final int BOLT_BOX = 11;
     private static final int BOLT_VISIBLE_END = 9; // ≈ 0.82 * 11
     // Mesmo respiro visual que existe entre o raio do último item e a borda direita (padding 10px,
@@ -41,10 +43,15 @@ public final class TaskbarWidgetWindow extends JWindow {
     private static final int GAP_AFTER_BOLT = 9;
     private final AppSettings settings;
     private final ThemeManager themeManager;
+    private final AppLogger logger;
     private final Runnable onOpenWindow;
     private final Runnable onRefresh;
     private final Runnable onOpenSettings;
     private final Runnable onExit;
+
+    private final NativeTaskbarWidget nativeWidget;
+    private final boolean preferNativeBackend;
+    private boolean loggedFallbackToSwing;
 
     private final WidgetCanvas canvas = new WidgetCanvas();
     private final Timer positionTimer;
@@ -57,6 +64,8 @@ public final class TaskbarWidgetWindow extends JWindow {
     private Rectangle lastBounds;
     private long lastTaskbarPeer;
     private Runnable onAvailabilityChanged;
+    private AutoCloseable shellFocusHook;
+    private volatile boolean zOrderCheckPending;
 
     public TaskbarWidgetWindow(
             AppSettings settings,
@@ -66,16 +75,44 @@ public final class TaskbarWidgetWindow extends JWindow {
             Runnable onOpenSettings,
             Runnable onExit
     ) {
+        this(settings, themeManager, new AppLogger(), onOpenWindow, onRefresh, onOpenSettings, onExit);
+    }
+
+    public TaskbarWidgetWindow(
+            AppSettings settings,
+            ThemeManager themeManager,
+            AppLogger logger,
+            Runnable onOpenWindow,
+            Runnable onRefresh,
+            Runnable onOpenSettings,
+            Runnable onExit
+    ) {
         this.settings = settings;
         this.themeManager = themeManager;
+        this.logger = logger != null ? logger : new AppLogger();
         this.onOpenWindow = onOpenWindow;
         this.onRefresh = onRefresh;
         this.onOpenSettings = onOpenSettings;
         this.onExit = onExit;
 
+        String backendProp = System.getProperty(BACKEND_PROPERTY, "native").trim().toLowerCase();
+        this.preferNativeBackend = WindowsTaskbarLocator.isWindows() && !"swing".equals(backendProp);
+        if (this.preferNativeBackend) {
+            this.nativeWidget = new NativeTaskbarWidget(
+                    settings, this.logger, onOpenWindow, onRefresh, onOpenSettings, onExit
+            );
+            this.logger.info("[WIDGET-NATIVE] Backend nativo Win32 habilitado (para usar Swing: -D"
+                    + BACKEND_PROPERTY + "=swing).");
+        } else {
+            this.nativeWidget = null;
+            this.logger.info("[WIDGET-NATIVE] Backend Swing (JWindow) selecionado ("
+                    + BACKEND_PROPERTY + "=" + backendProp + ").");
+        }
+
         setType(Type.UTILITY);
         setAlwaysOnTop(true);
         setFocusableWindowState(false);
+        setAutoRequestFocus(false);
         setBackground(new Color(0, 0, 0, 0));
 
         canvas.setOpaque(false);
@@ -113,6 +150,97 @@ public final class TaskbarWidgetWindow extends JWindow {
         this.onAvailabilityChanged = onAvailabilityChanged;
     }
 
+    private boolean isUsingNativeBackend() {
+        if (!preferNativeBackend || nativeWidget == null) {
+            return false;
+        }
+        if (nativeWidget.isPermanentFallbackToSwing()) {
+            if (!loggedFallbackToSwing) {
+                loggedFallbackToSwing = true;
+                logger.warn("[WIDGET-NATIVE] Fallback automático para o widget Swing (JWindow) ativado: motivo="
+                        + nativeWidget.getFallbackReason());
+            }
+            return false;
+        }
+        return true;
+    }
+
+    public String getRequestedBackendName() {
+        return preferNativeBackend ? "NATIVE" : "SWING";
+    }
+
+    public String getEffectiveBackendName() {
+        return isUsingNativeBackend() ? "NATIVE" : "SWING";
+    }
+
+    public String getFallbackReason() {
+        if (!preferNativeBackend) {
+            return "solicitado SWING via propriedade " + BACKEND_PROPERTY;
+        }
+        if (nativeWidget != null && nativeWidget.isPermanentFallbackToSwing()) {
+            return nativeWidget.getFallbackReason();
+        }
+        return "nenhum";
+    }
+
+    public long getWidgetHwndPeer() {
+        if (isUsingNativeBackend()) {
+            return nativeWidget.getChildHwndPeer();
+        }
+        if (super.isDisplayable()) {
+            try {
+                var ptr = com.sun.jna.Native.getComponentPointer(this);
+                return ptr != null ? com.sun.jna.Pointer.nativeValue(ptr) : 0L;
+            } catch (Throwable ignored) {
+                return 0L;
+            }
+        }
+        return 0L;
+    }
+
+    public long getTaskbarHwndPeer() {
+        if (isUsingNativeBackend()) {
+            long attached = nativeWidget.getAttachedTaskbarPeer();
+            return attached != 0L ? attached : WindowsTaskbarLocator.taskbarPeer();
+        }
+        return lastTaskbarPeer != 0L ? lastTaskbarPeer : WindowsTaskbarLocator.taskbarPeer();
+    }
+
+    public String getLastRenderStatus() {
+        if (isUsingNativeBackend()) {
+            return nativeWidget.getLastRenderStatus();
+        }
+        return super.isVisible() ? "OK (Swing JWindow)" : "INATIVO";
+    }
+
+    public List<DeviceReading> getCurrentItems() {
+        return List.copyOf(items);
+    }
+
+    public String formatDiagnosticSummary(boolean simModeActive, int realCount, int simCount) {
+        return String.format(
+                "[WIDGET-DIAG] modo=%s | backendSolicitado=%s | backendEfetivo=%s | reais=%d | simulados=%d | exibidos=%d | widgetHwnd=0x%X | Shell_TrayWnd=0x%X | render=%s | fallback=%s",
+                simModeActive ? "SIMULACAO" : "REAL",
+                getRequestedBackendName(),
+                getEffectiveBackendName(),
+                realCount,
+                simCount,
+                items.size(),
+                getWidgetHwndPeer(),
+                getTaskbarHwndPeer(),
+                getLastRenderStatus(),
+                getFallbackReason()
+        );
+    }
+
+    @Override
+    public boolean isVisible() {
+        if (isUsingNativeBackend()) {
+            return nativeWidget.isActiveAndVisible();
+        }
+        return super.isVisible();
+    }
+
     private void repositionFromTimer() {
         boolean wasVisible = isVisible();
         reposition();
@@ -123,7 +251,7 @@ public final class TaskbarWidgetWindow extends JWindow {
 
     private JPopupMenu buildPopupMenu() {
         JPopupMenu menu = new JPopupMenu();
-        JMenuItem open = new JMenuItem("Abrir Wireless Battery");
+        JMenuItem open = new JMenuItem("Abrir Wireless Battery [Swing]");
         open.addActionListener(e -> onOpenWindow.run());
         JMenuItem refresh = new JMenuItem("Atualizar agora");
         refresh.addActionListener(e -> onRefresh.run());
@@ -140,24 +268,79 @@ public final class TaskbarWidgetWindow extends JWindow {
     }
 
     public void setWidgetEnabled(boolean enabled) {
+        if (this.enabled == enabled) return;
         this.enabled = enabled;
         if (!enabled) {
             positionTimer.stop();
-            if (isVisible()) {
-                setVisible(false);
+            uninstallShellFocusHook();
+            if (nativeWidget != null) {
+                nativeWidget.setEnabled(false);
+            }
+            if (super.isVisible()) {
+                super.setVisible(false);
             }
             return;
         }
-        reposition();
+        if (isUsingNativeBackend()) {
+            if (super.isVisible()) {
+                super.setVisible(false);
+            }
+            nativeWidget.updateReadings(this.items);
+            nativeWidget.setEnabled(true);
+        } else {
+            reposition();
+            installShellFocusHook();
+        }
         if (!positionTimer.isRunning()) {
             positionTimer.start();
         }
+    }
+
+    private void installShellFocusHook() {
+        if (shellFocusHook != null) {
+            return;
+        }
+        shellFocusHook = WindowsTaskbarLocator.registerShellFocusHook(this::scheduleZOrderCheck);
+    }
+
+    private void uninstallShellFocusHook() {
+        if (shellFocusHook != null) {
+            try {
+                shellFocusHook.close();
+            } catch (Exception ignored) {
+                // ignore
+            }
+            shellFocusHook = null;
+        }
+    }
+
+    private void scheduleZOrderCheck() {
+        if (!enabled || zOrderCheckPending) {
+            return;
+        }
+        zOrderCheckPending = true;
+        SwingUtilities.invokeLater(() -> {
+            zOrderCheckPending = false;
+            if (!enabled || !isVisible()) {
+                return;
+            }
+            long tbPeer = lastTaskbarPeer != 0 ? lastTaskbarPeer : WindowsTaskbarLocator.taskbarPeer();
+            if (tbPeer != 0) {
+                WindowsTaskbarLocator.keepAboveTaskbarIfCovered(this, tbPeer);
+            }
+        });
     }
 
     public void updateReadings(List<DeviceReading> readings) {
         List<DeviceReading> sorted = new ArrayList<>(readings);
         sorted.sort(Comparator.comparingInt(r -> deviceOrder(r.deviceType())));
         this.items = sorted;
+
+        if (isUsingNativeBackend()) {
+            nativeWidget.updateReadings(this.items);
+            return;
+        }
+
         canvas.setToolTipText(buildTooltip(this.items));
 
         if (!enabled) {
@@ -176,6 +359,10 @@ public final class TaskbarWidgetWindow extends JWindow {
     public void refreshLayoutFromSettings() {
         lastRenderSignature = "";
         lastBounds = null;
+        if (isUsingNativeBackend()) {
+            nativeWidget.refreshLayout();
+            return;
+        }
         if (enabled) {
             reposition();
             canvas.repaint();
@@ -184,15 +371,24 @@ public final class TaskbarWidgetWindow extends JWindow {
 
     public boolean reposition() {
         if (!enabled) {
-            if (isVisible()) {
-                setVisible(false);
+            if (nativeWidget != null) {
+                nativeWidget.setEnabled(false);
+            }
+            if (super.isVisible()) {
+                super.setVisible(false);
             }
             return false;
         }
+        if (isUsingNativeBackend()) {
+            if (super.isVisible()) {
+                super.setVisible(false);
+            }
+            return nativeWidget.requestReposition();
+        }
         Optional<WindowsTaskbarLocator.TaskbarAnchor> anchorOpt = WindowsTaskbarLocator.findTaskbarAnchor();
         if (anchorOpt.isEmpty()) {
-            if (isVisible()) {
-                setVisible(false);
+            if (super.isVisible()) {
+                super.setVisible(false);
             }
             return false;
         }
@@ -206,28 +402,34 @@ public final class TaskbarWidgetWindow extends JWindow {
         int h = Math.min(Math.max(24, anchor.taskbarHeight() - 10), Math.max(26, settings.getTaskbarIconSize() + 14));
         int w = pref.width;
         int x = Math.max(anchor.taskbarLeftX() + 12, anchor.rightEdgeX() - w - settings.getTaskbarOffsetX());
-        int y = anchor.taskbarTopY() + (anchor.taskbarHeight() - h) / 2;
+        int y = widgetTop(anchor.taskbarTopY(), anchor.taskbarHeight(), h);
 
         Rectangle nextBounds = new Rectangle(x, y, w, h);
         if (!nextBounds.equals(lastBounds) || explorerRestarted) {
             lastBounds = nextBounds;
             setBounds(nextBounds);
-            if (explorerRestarted) {
-                toFront();
-            }
         }
-        if (!isVisible()) {
-            setVisible(true);
+        if (!super.isVisible()) {
+            super.setVisible(true);
+            WindowsTaskbarLocator.applyWidgetWindowStyles(this);
         }
-        WindowsTaskbarLocator.keepAboveTaskbar(this);
+        WindowsTaskbarLocator.keepAboveTaskbarIfCovered(this, anchor.taskbarHwndPeer());
         if (themeChanged) {
             canvas.repaint();
         }
         return true;
     }
 
+    static int widgetTop(int taskbarTop, int taskbarHeight, int height) {
+        return taskbarTop + (taskbarHeight - height) / 2;
+    }
+
     public void shutdown() {
         positionTimer.stop();
+        uninstallShellFocusHook();
+        if (nativeWidget != null) {
+            nativeWidget.shutdown();
+        }
         dispose();
     }
 
@@ -305,13 +507,26 @@ public final class TaskbarWidgetWindow extends JWindow {
     }
 
     private final class WidgetCanvas extends JPanel {
+        private final Font simBadgeFont = new Font("Segoe UI", Font.BOLD, 9);
+        private int cachedFontSize = -1;
+        private Font cachedTextFont;
+
+        private Font getTextFont() {
+            int size = settings.getTaskbarFontSize();
+            if (cachedTextFont == null || cachedFontSize != size) {
+                cachedFontSize = size;
+                cachedTextFont = new Font("Segoe UI", Font.BOLD, size);
+            }
+            return cachedTextFont;
+        }
+
         @Override
         public Dimension getPreferredSize() {
             return computePreferredSize();
         }
 
         Dimension computePreferredSize() {
-            Font font = new Font("Segoe UI", Font.BOLD, settings.getTaskbarFontSize());
+            Font font = getTextFont();
             FontMetrics fm = getFontMetrics(font);
             int iconSize = settings.getTaskbarIconSize();
             int spacing = settings.getTaskbarSpacing();
@@ -375,7 +590,7 @@ public final class TaskbarWidgetWindow extends JWindow {
             int spacing = settings.getTaskbarSpacing();
 
             if (hasSim) {
-                g2.setFont(new Font("Segoe UI", Font.BOLD, 9));
+                g2.setFont(simBadgeFont);
                 g2.setColor(new Color(0xD5, 0xAA, 0x59));
                 g2.fillRoundRect(x, midY - 7, 24, 14, 6, 6);
                 g2.setColor(new Color(0x10, 0x11, 0x14));
@@ -383,7 +598,7 @@ public final class TaskbarWidgetWindow extends JWindow {
                 x += 30;
             }
 
-            Font textFont = new Font("Segoe UI", Font.BOLD, settings.getTaskbarFontSize());
+            Font textFont = getTextFont();
             g2.setFont(textFont);
             FontMetrics fm = g2.getFontMetrics();
             int textY = midY + (fm.getAscent() - fm.getDescent()) / 2;

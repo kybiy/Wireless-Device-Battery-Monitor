@@ -148,6 +148,16 @@ public final class HidDiagnosticsDialog extends JDialog {
         return panel;
     }
 
+    static void appendRecentLog(JTextArea area, String line) {
+        area.append(line + "\n");
+        // O documento inclui uma linha vazia final após a quebra de linha.
+        var lines = area.getDocument().getDefaultRootElement();
+        int excess = lines.getElementCount() - 1 - AppLogger.MAX_ENTRIES;
+        if (excess > 0) {
+            area.replaceRange("", 0, lines.getElement(excess).getStartOffset());
+        }
+    }
+
     private JPanel buildLogsTab() {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
@@ -156,13 +166,13 @@ public final class HidDiagnosticsDialog extends JDialog {
         logArea.setEditable(false);
         logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         for (String line : logger.getHistory()) {
-            logArea.append(line + "\n");
+            appendRecentLog(logArea, line);
         }
         logArea.setCaretPosition(logArea.getDocument().getLength());
 
         logListener = line -> SwingUtilities.invokeLater(() -> {
             if (logArea != null) {
-                logArea.append(line + "\n");
+                appendRecentLog(logArea, line);
                 logArea.setCaretPosition(logArea.getDocument().getLength());
             }
         });

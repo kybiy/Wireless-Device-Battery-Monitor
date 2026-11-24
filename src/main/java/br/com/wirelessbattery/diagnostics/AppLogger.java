@@ -24,7 +24,7 @@ public final class AppLogger {
     private static final Logger JUL = Logger.getLogger("br.com.wirelessbattery");
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final DateTimeFormatter FILE_DATE_TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final int MAX_ENTRIES = 400;
+    public static final int MAX_ENTRIES = 400;
     private static final long MAX_LOG_FILE_BYTES = 256 * 1024L;
     private static final Path DEFAULT_LOG_FILE = Path.of(
             System.getProperty("user.home"), ".wireless-battery-java", "wireless-battery.log"

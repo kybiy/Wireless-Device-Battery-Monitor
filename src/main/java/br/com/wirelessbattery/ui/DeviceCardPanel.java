@@ -194,12 +194,20 @@ public final class DeviceCardPanel extends JPanel {
         repaint();
     }
 
+    @Override
+    public void removeNotify() {
+        progressAnimator.stop();
+        super.removeNotify();
+    }
+
     private void animateProgressTo(int target) {
         this.targetProgress = Math.max(0, Math.min(100, target));
-        if (Math.abs(animatedProgress - targetProgress) < 0.5f) {
+        if (!isShowing() || Math.abs(animatedProgress - targetProgress) < 0.5f) {
             animatedProgress = targetProgress;
             progressAnimator.stop();
-            progressBar.repaint();
+            if (isShowing()) {
+                progressBar.repaint();
+            }
             return;
         }
         if (!progressAnimator.isRunning()) {

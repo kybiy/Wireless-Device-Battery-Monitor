@@ -9,6 +9,8 @@ import java.awt.Graphics2D;
 import java.awt.geom.Arc2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.RoundRectangle2D;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.swing.Icon;
 
 /**
@@ -48,6 +50,10 @@ public final class DeviceIconFactory {
         }
     }
 
+    private record SvgCacheKey(IconName iconName, int size, int rgba) {}
+
+    private static final Map<SvgCacheKey, Icon> SVG_CACHE = new ConcurrentHashMap<>();
+
     private DeviceIconFactory() {}
 
     public static Color batteryColor(Integer percent, boolean charging, AppSettings settings) {
@@ -70,14 +76,20 @@ public final class DeviceIconFactory {
 
     /**
      * Carrega um ícone vetorial SVG estilo Lucide empacotado localmente com filtro de cor e suporte a HiDPI.
+     * Reutiliza instâncias em cache por {@code (ícone, tamanho, cor)} para evitar re-parsing de XML/SVG
+     * a cada repaint de cards e indicadores da barra de tarefas.
      */
     public static Icon createSvgIcon(IconName iconName, int size, Color color) {
-        FlatSVGIcon svg = new FlatSVGIcon(iconName.getResourcePath(), size, size);
-        if (color != null) {
-            FlatSVGIcon.ColorFilter filter = new FlatSVGIcon.ColorFilter(c -> color);
-            svg.setColorFilter(filter);
-        }
-        return svg;
+        int rgba = color != null ? color.getRGB() : 0;
+        SvgCacheKey key = new SvgCacheKey(iconName, size, rgba);
+        return SVG_CACHE.computeIfAbsent(key, k -> {
+            FlatSVGIcon svg = new FlatSVGIcon(k.iconName().getResourcePath(), k.size(), k.size());
+            if (color != null) {
+                FlatSVGIcon.ColorFilter filter = new FlatSVGIcon.ColorFilter(c -> color);
+                svg.setColorFilter(filter);
+            }
+            return svg;
+        });
     }
 
     public static Icon createDeviceIcon(DeviceType type, int size, Color foreground) {
