@@ -14,7 +14,7 @@ import org.hid4java.HidDevice;
  *
  * Baseado diretamente em {@code PollGameSirCyclone} ({@code src/drivers/gamesir.cpp} do
  * repositório de referência). Opera em modo XInput via receptor 2.4 GHz ou cabo USB
- * na coleção HID {@code FFF0:0040} usando apenas a consulta segura de estado {@code 0x0F 0x03}.
+ * na coleção HID {@code FFF0:0040} usando o relatório de saída {@code 0x0F 0x03}.
  *
  * Permanece marcado como experimental até validação com o controle físico no Windows.
  */

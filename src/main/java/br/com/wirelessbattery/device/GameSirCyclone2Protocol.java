@@ -3,21 +3,15 @@ package br.com.wirelessbattery.device;
 import java.util.Arrays;
 
 /**
- * Protocolo estritamente somente-leitura para consulta de bateria do GameSir Cyclone 2
- * (modo XInput via receptor 2.4 GHz ou cabo USB).
- *
- * Confirmado pelas especificações de protocolo de {@code pedrosegato/gamesir-reverse-engineering}
- * (engenharia reversa do GameSir Connect 1.16.7) e {@code vdemonchy/cyclone2-linux}:
- * - Coleção HID proprietária: Usage Page {@code 0xFFF0}, Usage {@code 0x0040}
- * - Output Report {@code 0x0F 0xF2 0x00} (64 bytes): Heartbeat oficial somente-leitura do GameSir Connect,
- *   que instrui o controle a transmitir relatórios de estado {@code 0x12} por ~1 segundo.
- *   (Não utiliza o comando {@code 0x03}, que corresponde a escrita de perfil {@code WriteProfile}.)
+ * Consulta de bateria pela coleção HID FFF0:0040 no modo XInput.
+ * O relatório de saída tem 64 bytes: 0x0F 0x03 e os demais bytes zerados.
+ * A semântica desse comando pode variar conforme o firmware.
  * - Input Report {@code 0x12} (>= 37 bytes):
  *   - {@code data[35] != 0}: cabo conectado / carregando
  *   - {@code data[36]}: porcentagem real da bateria ({@code 0..100})
  * - Frames de resposta/evento {@code 0x10} são ignorados durante a leitura.
  *
- * Nenhum comando de perfil, firmware, vibração, iluminação ou remapeamento é enviado.
+ * Referências de protocolo: vdemonchy/cyclone2-linux e pedrosegato/gamesir-reverse-engineering.
  */
 public final class GameSirCyclone2Protocol {
     public static final byte OUT_REPORT_ID = 0x0F;

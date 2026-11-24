@@ -1,7 +1,7 @@
 param(
     [string] $Jdk = 'dist/toolchain/jdk-25.0.5.1+2',
     [string] $Wix = 'dist/toolchain/wix',
-    [string] $OutputDirectory = 'dist/v1.1.0'
+    [string] $OutputDirectory = 'dist/v1.1.1'
 )
 
 $ErrorActionPreference = 'Stop'

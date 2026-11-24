@@ -1,6 +1,6 @@
 # Wireless Battery Monitor · Java Edition
 
-O Wireless Battery Monitor mostra a carga dos seus periféricos na janela principal, na bandeja do sistema e ao lado do relógio do Windows. A versão **1.1.0** foi desenvolvida para Windows x64 e testada no Windows 11.
+O Wireless Battery Monitor mostra a carga dos seus periféricos na janela principal, na bandeja do sistema e ao lado do relógio do Windows. A versão **1.1.1** foi desenvolvida para Windows x64 e foi testada no Windows 11.
 
 ![Janela do monitor no tema escuro com a porcentagem de bateria do mouse, do headset e do controle](docs/screenshot.png)
 
@@ -10,15 +10,17 @@ O Wireless Battery Monitor mostra a carga dos seus periféricos na janela princi
 
 | Dispositivo | Tipo | Conexão | Estado do suporte |
 | --- | --- | --- | --- |
-| Akko Verge S9 / S9 Ultra | Headset sem fio | Dongle USB 2,4 GHz | Implementado e testado no Windows 11 |
-| Delux M800 Pro PAW3395 | Mouse sem fio | Dongle USB 2,4 GHz | Implementado e testado no Windows 11 |
-| GameSir Cyclone 2 | Controle sem fio | Dongle USB 2,4 GHz, modo XInput | Implementado e testado no Windows 11 |
+| Akko Verge S9 / S9 Ultra | Headset sem fio | Dongle USB 2,4 GHz | Implementado |
+| Delux M800 Pro PAW3395 | Mouse sem fio | Dongle USB 2,4 GHz | Implementado |
+| GameSir Cyclone 2 | Controle sem fio | Dongle USB 2,4 GHz, modo XInput | Implementado |
 
 Os testes de compatibilidade abrangem esses modelos específicos. Outras versões, firmwares ou revisões de hardware podem usar relatórios HID diferentes, mesmo quando o nome comercial é semelhante.
 
+O GameSir utiliza o relatório de saída 0x0F 0x03 para obter o estado. O efeito sobre perfis em cada revisão de firmware requer validação no controle.
+
 ## Funcionalidades
 
-- **Monitoramento automático de bateria:** detecta automaticamente os receptores compatíveis e consulta a bateria de cada dispositivo via USB HID (somente leitura). A janela em Java Swing com FlatLaf exibe a porcentagem e o estado de conexão em cartões individuais, preservando a última leitura conhecida em repouso.
+- **Monitoramento automático de bateria:** detecta automaticamente os receptores compatíveis e consulta a bateria de cada dispositivo via USB HID. A janela em Java Swing com FlatLaf exibe a porcentagem e o estado de conexão em cartões individuais, preservando a última leitura conhecida em repouso.
 - **Widget nativo Win32 na barra de tarefas (compatível com `Win+D`):** exibe os indicadores horizontais ao lado do relógio do Windows utilizando uma janela filha nativa (`WS_CHILD | WS_CLIPSIBLINGS`, `WS_EX_LAYERED | WS_EX_NOACTIVATE`) anexada à `Shell_TrayWnd` e renderizada via `UpdateLayeredWindow`. Por fazer parte da hierarquia da barra de tarefas, o indicador **permanece visível ao usar `Win+D` (*Mostrar área de trabalho*) ou `Alt+Tab`**, não rouba foco, não sobrepõe jogos em tela cheia e se recupera automaticamente caso o `explorer.exe` seja reiniciado.
 - **Integração com a bandeja do sistema (`SystemTray`):** ícones individuais nítidos por dispositivo com menu de contexto completo, podendo operar isoladamente ou em conjunto com o widget da barra de tarefas.
 - **Otimizações de memória em segundo plano:** cache concorrente de ícones vetoriais SVG (`SVG_CACHE`), pausa automática de animações quando a janela está minimizada, reaproveitamento de cartões sem reconstrução desnecessária de layout e limite fixo de histórico na aba de logs.
@@ -32,16 +34,16 @@ Baixe um dos pacotes para **Windows x64** na página de [GitHub Releases](https:
 
 | Arquivo | Como usar |
 | --- | --- |
-| `WirelessBattery-1.1.0.exe` | **Recomendado.** Execute o instalador e siga o assistente. Inclui um runtime Java compatível embutido e instala no perfil do usuário (`%LOCALAPPDATA%\WirelessBattery\`) sem exigir permissões de Administrador. |
-| `WirelessBattery-1.1.0-portable-win-x64.zip` | Extraia a pasta inteira e execute `WirelessBattery\WirelessBattery.exe`. O pacote portátil inclui o runtime Java e dispensa instalação. |
+| `WirelessBattery-1.1.1.exe` | **Recomendado.** Execute o instalador e siga o assistente. Inclui um runtime Java compatível embutido e instala no perfil do usuário (`%LOCALAPPDATA%\WirelessBattery\`) sem exigir permissões de Administrador. |
+| `WirelessBattery-1.1.1-portable-win-x64.zip` | Extraia a pasta inteira e execute `WirelessBattery\WirelessBattery.exe`. O pacote portátil inclui o runtime Java e dispensa instalação. |
 
 Conecte o dongle do periférico e ligue o dispositivo. Para o GameSir Cyclone 2, selecione o modo XInput.
 
-### Atualizando uma versão já instalada (`v1.0.0` → `v1.1.0` ou futuras)
+### Atualizando uma versão já instalada (`v1.0.0` → `v1.1.1` ou futuras)
 
 Não é necessário desinstalar manualmente a versão anterior nem fechar o aplicativo antes:
 
-1. Baixe e execute `WirelessBattery-1.1.0.exe`.
+1. Baixe e execute `WirelessBattery-1.1.1.exe`.
 2. O instalador detectará automaticamente a instalação existente pelo `UpgradeCode` fixo, encerrará com segurança apenas a instância instalada em execução (sem afetar cópias portáteis em outras pastas) e atualizará o executável, bibliotecas e runtime Java com `RemoveExistingProducts` agendado dentro da sequência transacional do Windows Installer (`After="InstallInitialize"`).
 3. Suas configurações em `%USERPROFILE%\.wireless-battery-java\settings.properties`, seus atalhos (Área de Trabalho e Menu Iniciar) e sua preferência de inicialização automática com o Windows são integralmente preservados.
 
@@ -50,8 +52,8 @@ Não é necessário desinstalar manualmente a versão anterior nem fechar o apli
 Na pasta do download, execute no PowerShell o comando correspondente ao arquivo escolhido e compare o resultado com a entrada do mesmo nome em `SHA256SUMS.txt` da Release.
 
 ```powershell
-Get-FileHash .\WirelessBattery-1.1.0.exe -Algorithm SHA256
-Get-FileHash .\WirelessBattery-1.1.0-portable-win-x64.zip -Algorithm SHA256
+Get-FileHash .\WirelessBattery-1.1.1.exe -Algorithm SHA256
+Get-FileHash .\WirelessBattery-1.1.1-portable-win-x64.zip -Algorithm SHA256
 ```
 
 O Windows SmartScreen pode exibir um aviso para executáveis sem assinatura digital comercial. Confira a origem oficial do download e o hash SHA-256 antes de prosseguir (clique em **Mais informações** → **Executar assim mesmo**). Se o hash divergir, descarte o arquivo. Nunca desative o Windows Defender ou outras proteções do sistema.
@@ -97,4 +99,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-windows.ps
   -Wix "caminho\para\wix314"
 ```
 
-O script compila o auxiliar de encerramento seguro (`packaging/wix/CloseHelper.cs`), aplica os templates WiX customizados (`packaging/wix/`), mantém o `--win-upgrade-uuid 7c2f4b5e-3d9a-4e8c-91f2-8a6b4d2e1c90` e gera `WirelessBattery-1.1.0.exe`, `WirelessBattery-1.1.0-portable-win-x64.zip` e `SHA256SUMS.txt` em `dist/`.
+O script compila o auxiliar de encerramento seguro (`packaging/wix/CloseHelper.cs`), aplica os templates WiX customizados (`packaging/wix/`), mantém o `--win-upgrade-uuid 7c2f4b5e-3d9a-4e8c-91f2-8a6b4d2e1c90` e gera `WirelessBattery-1.1.1.exe`, `WirelessBattery-1.1.1-portable-win-x64.zip` e `SHA256SUMS.txt` em `dist/`.

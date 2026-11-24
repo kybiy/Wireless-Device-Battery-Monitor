@@ -5,10 +5,15 @@ import java.util.Arrays;
 /**
  * Protocolo somente-leitura de consulta de bateria do Delux M800 Pro PAW3395.
  *
- * Baseado exclusivamente na função {@code initial_query} de
- * {@code https://github.com/xb-bx/m800-pro-driver/blob/HEAD/main.c}:
- * - SET_REPORT (Feature Report ID 0x0C, 33 bytes): {0x0c, 0x01, 0x20, 0x00, packetId, 0x00...}
- * - GET_REPORT (Feature Report ID 0x0C, 33 bytes): buf[18] = carga, buf[19] == 1 indica carregando.
+ * Implementação Java independente usando os parâmetros de interoperabilidade HID
+ * documentados a partir da consulta à referência pública
+ * {@code https://github.com/xb-bx/m800-pro-driver}:
+ * - SET_REPORT (Feature Report ID 0x0C, 33 bytes): {0x0C, 0x01, 0x20, 0x00, packetId, 0x00...}
+ * - GET_REPORT (Feature Report ID 0x0C, 33 bytes): buf[18] = carga (1..100), buf[19] == 1 indica carregando.
+ *
+ * Observação de validação: a leitura percentual (ex.: 78%) foi confirmada em hardware real no Windows;
+ * o comportamento exato do flag de carregamento (buf[19] == 1) e da carga em 100% ainda precisa
+ * ser validado em hardware real com o mouse conectado.
  *
  * Nenhum comando de configuração (DPI, polling rate, remapeamento ou firmware) é implementado aqui.
  */
@@ -16,7 +21,8 @@ public final class DeluxM800ProProtocol {
     public static final byte FEATURE_REPORT_ID = 0x0C;
     public static final int FULL_REPORT_LENGTH = 33;
     public static final int PAYLOAD_LENGTH = 32;
-    public static final int BATTERY_CHARGING_SENTINEL = 0x65;
+    public static final int MIN_VALID_BATTERY_PERCENT = 1;
+    public static final int MAX_VALID_BATTERY_PERCENT = 100;
 
     private DeluxM800ProProtocol() {}
 
@@ -57,7 +63,7 @@ public final class DeluxM800ProProtocol {
      * No {@code hid4java} 0.8.0, {@code HidApi.getFeatureReport} sempre remove o byte 0 (Report ID 0x0C)
      * ao copiar {@code report.buffer[1..]} para {@code buf[0..]} e devolve {@code res} (33 ou 32 bytes).
      * Assim, no buffer recebido pelo Java:
-     * - {@code payload[17]} corresponde a {@code buf[18]} (carga de bateria em {@code main.c})
+     * - {@code payload[17]} corresponde a {@code buf[18]} (percentual de bateria, 1..100)
      * - {@code payload[18]} corresponde a {@code buf[19]} (flag de carregamento {@code == 1})
      */
     public static ParsedBattery parseHid4JavaFeaturePayload(byte[] payload, int reportedLength) {
@@ -97,15 +103,17 @@ public final class DeluxM800ProProtocol {
         return decodeBatteryBytes(buffer[batteryIndex] & 0xFF, buffer[chargingIndex] & 0xFF);
     }
 
+    /**
+     * Decodifica separadamente o byte de percentual da bateria (1..100) e o byte
+     * de estado de carregamento ({@code 1} = carregando) do relatório HID.
+     * Valores fora de {@code 1..100} (incluindo {@code 0} ou {@code 101}) são rejeitados
+     * como inválidos ou sem leitura.
+     */
     private static ParsedBattery decodeBatteryBytes(int rawBattery, int rawCharging) {
-        if (rawBattery == 0) {
+        if (rawBattery < MIN_VALID_BATTERY_PERCENT || rawBattery > MAX_VALID_BATTERY_PERCENT) {
             return null;
         }
-        boolean charging = (rawCharging == 1) || (rawBattery == BATTERY_CHARGING_SENTINEL);
-        int percent = rawBattery == BATTERY_CHARGING_SENTINEL ? 100 : rawBattery;
-        if (percent < 0 || percent > 100) {
-            return null;
-        }
-        return new ParsedBattery(percent, charging);
+        boolean charging = (rawCharging == 1);
+        return new ParsedBattery(rawBattery, charging);
     }
 }

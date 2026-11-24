@@ -9,13 +9,15 @@ import java.util.Properties;
 /**
  * Configuração dos identificadores HID do Delux M800 Pro PAW3395.
  *
- * Os valores padrão são derivados do repositório de referência Linux
- * {@code https://github.com/xb-bx/m800-pro-driver} (main.c) e permanecem
- * configuráveis até confirmação em hardware real no Windows.
+ * Os identificadores USB padrão (VID 0x248A, PIDs 0x5B2F/0x5B2E e interface 1) foram
+ * consultados originalmente no projeto público {@code https://github.com/xb-bx/m800-pro-driver}
+ * e confirmados no receptor real no Windows (IF 1, UsagePage 0xFF00, Usage 0x0001 / Col04),
+ * permanecendo configuráveis via propriedades locais. O comportamento de carregamento e
+ * carga em 100% ainda exige validação em hardware real.
  */
 public final class DeluxM800ProConfig {
-    // Valores de referência encontrados em xb-bx/m800-pro-driver (main.c)
-    // e validados no receptor real no Windows (IF 1, UsagePage 0xFF00, Usage 0x0001, Col04)
+    // Identificadores técnicos consultados em xb-bx/m800-pro-driver e validados no Windows
+    // (IF 1, UsagePage 0xFF00, Usage 0x0001, Col04)
     public static final int DEFAULT_VENDOR_ID = 0x248A;
     public static final int DEFAULT_WIRELESS_PID = 0x5B2F;
     public static final int DEFAULT_WIRED_PID = 0x5B2E;

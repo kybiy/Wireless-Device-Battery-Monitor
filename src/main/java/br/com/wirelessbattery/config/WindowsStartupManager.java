@@ -65,13 +65,11 @@ public final class WindowsStartupManager {
         }
 
         if (enabled) {
-            if (before.disabledByWindowsStartupApproved() && logger != null) {
-                logger.warn("[STARTUP] O Windows (Gerenciador de Tarefas / StartupApproved\\Run) havia marcado a inicialização como desabilitada — reabilitando...");
+            if (before.disabledByWindowsStartupApproved()) {
+                return true;
             }
-            if (!before.registryEntryPresent()
-                    || !before.registryMatchesExpected()
-                    || before.disabledByWindowsStartupApproved()) {
-                return applyStartupSetting(true, logger);
+            if (!before.registryEntryPresent() || !before.registryMatchesExpected()) {
+                return applyStartupSetting(true, false, logger);
             }
             removeLegacyValueIfPresent();
             if (logger != null) {
@@ -95,6 +93,10 @@ public final class WindowsStartupManager {
      * e confirma a criação/remoção lendo o valor de volta.
      */
     public static boolean applyStartupSetting(boolean enable, AppLogger logger) {
+        return applyStartupSetting(enable, true, logger);
+    }
+
+    private static boolean applyStartupSetting(boolean enable, boolean explicitChoice, AppLogger logger) {
         if (!isWindows()) {
             return false;
         }
@@ -115,7 +117,9 @@ public final class WindowsStartupManager {
                         command
                 );
                 removeLegacyValueIfPresent();
-                ensureStartupApprovedEnabled(logger);
+                if (explicitChoice) {
+                    ensureStartupApprovedEnabled(logger);
+                }
 
                 String readBack = readRegisteredCommand();
                 boolean created = command.equals(readBack);

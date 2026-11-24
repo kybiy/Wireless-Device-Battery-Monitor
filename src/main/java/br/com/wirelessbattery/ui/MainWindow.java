@@ -499,6 +499,7 @@ public final class MainWindow extends JFrame {
     }
 
     private void openSettingsDialog(boolean openSimulationTab) {
+        boolean previousStartupPreference = settings.isStartWithWindows();
         int prevInterval = settings.getPollIntervalSeconds();
 
         SettingsDialog dialog = new SettingsDialog(
@@ -513,7 +514,9 @@ public final class MainWindow extends JFrame {
             return;
         }
 
-        WindowsStartupManager.applyStartupSetting(settings.isStartWithWindows(), logger);
+        if (previousStartupPreference != settings.isStartWithWindows()) {
+            WindowsStartupManager.applyStartupSetting(settings.isStartWithWindows(), logger);
+        }
         if (prevInterval != settings.getPollIntervalSeconds()) {
             deviceManager.updatePollInterval(settings.getPollIntervalSeconds());
         }
