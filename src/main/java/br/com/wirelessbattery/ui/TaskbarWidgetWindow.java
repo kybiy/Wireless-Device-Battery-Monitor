@@ -217,6 +217,10 @@ public final class TaskbarWidgetWindow extends JWindow {
         return List.copyOf(items);
     }
 
+    public String getTooltipText() {
+        return canvas.getToolTipText();
+    }
+
     public String formatDiagnosticSummary(boolean simModeActive, int realCount, int simCount) {
         return String.format(
                 "[WIDGET-DIAG] modo=%s | backendSolicitado=%s | backendEfetivo=%s | reais=%d | simulados=%d | exibidos=%d | widgetHwnd=0x%X | Shell_TrayWnd=0x%X | render=%s | fallback=%s",
@@ -335,13 +339,12 @@ public final class TaskbarWidgetWindow extends JWindow {
         List<DeviceReading> sorted = new ArrayList<>(readings);
         sorted.sort(Comparator.comparingInt(r -> deviceOrder(r.deviceType())));
         this.items = sorted;
+        canvas.setToolTipText(buildTooltip(this.items));
 
         if (isUsingNativeBackend()) {
             nativeWidget.updateReadings(this.items);
             return;
         }
-
-        canvas.setToolTipText(buildTooltip(this.items));
 
         if (!enabled) {
             return;
@@ -474,10 +477,13 @@ public final class TaskbarWidgetWindow extends JWindow {
                 .append(themeManager.isDark()).append('|');
         for (DeviceReading r : items) {
             sb.append(r.deviceId()).append(':')
+                    .append(r.displayName()).append(':')
                     .append(r.deviceType()).append(':')
+                    .append(r.status()).append(':')
                     .append(r.batteryPercent()).append(':')
                     .append(r.lastKnownPercent()).append(':')
                     .append(r.charging()).append(':')
+                    .append(r.connectionLabel()).append(':')
                     .append(r.isSimulated()).append(';');
         }
         return sb.toString();
@@ -496,14 +502,27 @@ public final class TaskbarWidgetWindow extends JWindow {
             if (r.hasBatteryPercent()) {
                 sb.append(r.batteryPercent()).append("%");
                 if (r.charging()) sb.append(" (carregando)");
+                appendConnectionIfRelevant(sb, r);
             } else if (r.hasLastKnownPercent()) {
                 sb.append(r.lastKnownPercent()).append("% (última leitura)");
+                appendConnectionIfRelevant(sb, r);
+            } else if (r.status() == br.com.wirelessbattery.model.ConnectionStatus.BATTERY_UNAVAILABLE
+                    && "Bluetooth".equalsIgnoreCase(r.connectionLabel())) {
+                sb.append("Conectado · Bluetooth (leitura indisponível)");
             } else {
                 sb.append(r.status().getLabel());
             }
         }
         sb.append("</html>");
         return sb.toString();
+    }
+
+    private static void appendConnectionIfRelevant(StringBuilder sb, DeviceReading r) {
+        if (r.connectionLabel() != null
+                && !r.connectionLabel().isBlank()
+                && !"Sem conexão".equalsIgnoreCase(r.connectionLabel())) {
+            sb.append(" [").append(r.connectionLabel()).append("]");
+        }
     }
 
     private final class WidgetCanvas extends JPanel {

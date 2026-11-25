@@ -10,6 +10,7 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
+import java.awt.GridLayout;
 import java.awt.Insets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -145,7 +146,7 @@ public final class SettingsDialog extends JDialog {
         addLabelField(form, gc, row++, "Limite bateria baixa (vermelho, %):", lowThresholdSpinner);
         addLabelField(form, gc, row++, "Limite bateria média (amarelo, %):", mediumThresholdSpinner);
 
-        JPanel visPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        JPanel visPanel = new JPanel(new GridLayout(0, 2, 12, 2));
         visPanel.setBorder(BorderFactory.createTitledBorder("Dispositivos permitidos"));
         for (BatteryDevice device : realDevices) {
             JCheckBox box = new JCheckBox(device.getDisplayName(), !settings.isDeviceHidden(device.getId()));

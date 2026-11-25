@@ -134,7 +134,9 @@ public final class TrayDisplayController {
         String currentMenuSig = computeMenuSignature();
         Set<String> validKeys = new HashSet<>();
         for (DeviceReading r : items) {
-            String key = r.deviceId();
+            String key = r.deviceType() != DeviceType.OTHER
+                    ? "slot-" + r.deviceType().name()
+                    : r.deviceId();
             validKeys.add(key);
 
             Integer shownPct = r.hasBatteryPercent()
@@ -356,7 +358,11 @@ public final class TrayDisplayController {
                 }
             }
         }
-        sb.append(" [").append(r.connectionLabel()).append("]");
+        if (r.connectionLabel() != null
+                && !r.connectionLabel().isBlank()
+                && !"Sem conexão".equalsIgnoreCase(r.connectionLabel())) {
+            sb.append(" [").append(r.connectionLabel()).append("]");
+        }
         String text = sb.toString();
         return text.length() > 120 ? text.substring(0, 120) : text;
     }

@@ -121,6 +121,17 @@ public final class NativeTaskbarWidget {
     private static final int CMD_SETTINGS = 3;
     private static final int CMD_EXIT = 4;
 
+    private static final int WS_POPUP = 0x80000000;
+    private static final int WS_EX_TOPMOST = 0x00000008;
+    private static final int TTS_ALWAYSTIP = 0x01;
+    private static final int TTS_NOPREFIX = 0x02;
+    private static final int TTF_IDISHWND = 0x0001;
+    private static final int TTF_SUBCLASS = 0x0010;
+    private static final int TTM_SETMAXTIPWIDTH = 0x0400 + 24;
+    private static final int TTM_ADDTOOLW = 0x0400 + 50;
+    private static final int TTM_UPDATETIPTEXTW = 0x0400 + 57;
+    private static final int ICC_WIN95_CLASSES = 0x000000FF;
+
     private static final int BOLT_BOX = 11;
     private static final int BOLT_VISIBLE_END = 9;
     private static final int GAP_AFTER_BOLT = 9;
@@ -163,6 +174,30 @@ public final class NativeTaskbarWidget {
         }
     }
 
+    @Structure.FieldOrder({"cbSize", "dwICC"})
+    public static class INITCOMMONCONTROLSEX extends Structure {
+        public int cbSize = size();
+        public int dwICC;
+    }
+
+    @Structure.FieldOrder({"cbSize", "uFlags", "hwnd", "uId", "rect", "hinst", "lpszText", "lParam", "lpReserved"})
+    public static class TTTOOLINFOW extends Structure {
+        public int cbSize = size();
+        public int uFlags;
+        public HWND hwnd;
+        public Pointer uId;
+        public RECT rect = new RECT();
+        public HINSTANCE hinst;
+        public WString lpszText;
+        public LPARAM lParam = new LPARAM(0);
+        public Pointer lpReserved;
+    }
+
+    private interface Comctl32Ex extends StdCallLibrary {
+        Comctl32Ex INSTANCE = Native.load("comctl32", Comctl32Ex.class, W32APIOptions.DEFAULT_OPTIONS);
+        boolean InitCommonControlsEx(INITCOMMONCONTROLSEX lpInitCtrls);
+    }
+
     @Structure.FieldOrder({"BlendOp", "BlendFlags", "SourceConstantAlpha", "AlphaFormat"})
     public static class BLENDFUNCTION extends Structure {
         public byte BlendOp;
@@ -202,6 +237,8 @@ public final class NativeTaskbarWidget {
         boolean GetCursorPos(POINT lpPoint);
         boolean ValidateRect(HWND hWnd, Pointer lpRect);
         int GetGuiResources(HANDLE hProcess, int uiFlags);
+        LRESULT SendMessageW(HWND hWnd, int Msg, WPARAM wParam, TTTOOLINFOW lParam);
+        LRESULT SendMessageW(HWND hWnd, int Msg, WPARAM wParam, LPARAM lParam);
     }
 
     static int getProcessGuiResources(int uiFlags) {
@@ -235,7 +272,10 @@ public final class NativeTaskbarWidget {
     // Estado exclusivo da thread Win32
     private boolean classRegistered;
     private HWND hwndChild;
+    private HWND hwndTip;
     private HWND hwndTaskbar;
+    private String lastTooltipText = "";
+    private volatile String currentTooltipText = "";
     private HANDLE handCursor;
     private boolean hovered;
     private boolean lightTaskbar;
@@ -278,6 +318,10 @@ public final class NativeTaskbarWidget {
         return lastRenderStatus;
     }
 
+    public String getCurrentTooltipText() {
+        return currentTooltipText;
+    }
+
     public boolean isActiveAndVisible() {
         return activeAndVisible && childHwndPeer != 0L;
     }
@@ -299,9 +343,11 @@ public final class NativeTaskbarWidget {
     }
 
     public void updateReadings(List<DeviceReading> items) {
+        List<DeviceReading> copy = List.copyOf(items);
         synchronized (stateLock) {
-            this.currentItems = List.copyOf(items);
+            this.currentItems = copy;
         }
+        this.currentTooltipText = buildPlainTooltip(copy);
         if (wantEnabled && !permanentFallbackToSwing) {
             ensureWin32ThreadStarted();
             requestWin32Sync();
@@ -594,10 +640,111 @@ public final class NativeTaskbarWidget {
                 "[WIDGET-NATIVE] Janela filha WS_CHILD criada com sucesso: hwnd=0x%X, parent=0x%X (parentMatch=%s, style=0x%08X, exStyle=0x%08X).",
                 childHwndPeer, parentPeer, (parentPeer == tbPeer), actualStyle, actualExStyle
         ));
+        createTooltipOnThread(hInst, created);
         return true;
     }
 
+    private void createTooltipOnThread(HINSTANCE hInst, HWND targetChild) {
+        try {
+            INITCOMMONCONTROLSEX icc = new INITCOMMONCONTROLSEX();
+            icc.dwICC = ICC_WIN95_CLASSES;
+            Comctl32Ex.INSTANCE.InitCommonControlsEx(icc);
+
+            HWND tip = User32.INSTANCE.CreateWindowEx(
+                    WS_EX_TOPMOST,
+                    "tooltips_class32",
+                    null,
+                    WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                    0, 0, 0, 0,
+                    null,
+                    null,
+                    hInst,
+                    null
+            );
+            if (tip != null && User32.INSTANCE.IsWindow(tip)) {
+                this.hwndTip = tip;
+                this.lastTooltipText = "";
+                TTTOOLINFOW ti = new TTTOOLINFOW();
+                ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+                ti.hwnd = targetChild;
+                ti.uId = targetChild.getPointer();
+                ti.lpszText = new WString("Wireless Battery");
+                User32Ex.INSTANCE.SendMessageW(tip, TTM_ADDTOOLW, new WPARAM(0), ti);
+                User32Ex.INSTANCE.SendMessageW(tip, TTM_SETMAXTIPWIDTH, new WPARAM(0), new LPARAM(600));
+            }
+        } catch (Throwable ignored) {
+            this.hwndTip = null;
+        }
+    }
+
+    private void updateTooltipOnThread(List<DeviceReading> items) {
+        String nextText = buildPlainTooltip(items);
+        this.currentTooltipText = nextText;
+        if (hwndTip == null || hwndChild == null || nextText.equals(lastTooltipText)) {
+            return;
+        }
+        try {
+            if (!User32.INSTANCE.IsWindow(hwndTip)) {
+                hwndTip = null;
+                return;
+            }
+            TTTOOLINFOW ti = new TTTOOLINFOW();
+            ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            ti.hwnd = hwndChild;
+            ti.uId = hwndChild.getPointer();
+            ti.lpszText = new WString(nextText);
+            User32Ex.INSTANCE.SendMessageW(hwndTip, TTM_UPDATETIPTEXTW, new WPARAM(0), ti);
+            lastTooltipText = nextText;
+        } catch (Throwable ignored) {
+            // mantém operação normal do widget mesmo se tooltip falhar
+        }
+    }
+
+    static String buildPlainTooltip(List<DeviceReading> list) {
+        if (list == null || list.isEmpty()) {
+            return "Wireless Battery — nenhum dispositivo detectado";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < list.size(); i++) {
+            DeviceReading r = list.get(i);
+            if (i > 0) sb.append('\n');
+            if (r.isSimulated()) sb.append("[Simulação] ");
+            sb.append(r.displayName()).append(": ");
+            if (r.hasBatteryPercent()) {
+                sb.append(r.batteryPercent()).append("%");
+                if (r.charging()) sb.append(" (carregando)");
+                if (r.connectionLabel() != null && !r.connectionLabel().isBlank()
+                        && !"Sem conexão".equalsIgnoreCase(r.connectionLabel())) {
+                    sb.append(" [").append(r.connectionLabel()).append("]");
+                }
+            } else if (r.hasLastKnownPercent()) {
+                sb.append(r.lastKnownPercent()).append("% (última leitura)");
+                if (r.connectionLabel() != null && !r.connectionLabel().isBlank()
+                        && !"Sem conexão".equalsIgnoreCase(r.connectionLabel())) {
+                    sb.append(" [").append(r.connectionLabel()).append("]");
+                }
+            } else if (r.status() == br.com.wirelessbattery.model.ConnectionStatus.BATTERY_UNAVAILABLE
+                    && "Bluetooth".equalsIgnoreCase(r.connectionLabel())) {
+                sb.append("Conectado · Bluetooth (leitura indisponível)");
+            } else {
+                sb.append(r.status().getLabel());
+            }
+        }
+        return sb.toString();
+    }
+
     private void destroyChildWindowOnThread(String reason) {
+        if (hwndTip != null) {
+            try {
+                if (User32.INSTANCE.IsWindow(hwndTip)) {
+                    User32.INSTANCE.DestroyWindow(hwndTip);
+                }
+            } catch (Throwable ignored) {
+                // ignora
+            }
+            hwndTip = null;
+            lastTooltipText = "";
+        }
         if (hwndChild != null) {
             long oldChild = childHwndPeer;
             long oldTb = attachedTaskbarPeer;
@@ -651,6 +798,7 @@ public final class NativeTaskbarWidget {
         int physH = Math.max(24, Math.min(barClientH - 4, (int) Math.round(logicalH * scale)));
 
         String sig = buildPaintSignature(itemsSnapshot, currentLight, hovered, dpi, physW, physH);
+        updateTooltipOnThread(itemsSnapshot);
         if (!sig.equals(lastPaintSignature)) {
             this.lightTaskbar = currentLight;
             this.lastDpi = dpi;
@@ -1015,10 +1163,13 @@ public final class NativeTaskbarWidget {
                 .append(settings.getMediumBatteryThreshold()).append('|');
         for (DeviceReading r : items) {
             sb.append(r.deviceId()).append(':')
+                    .append(r.displayName()).append(':')
                     .append(r.deviceType()).append(':')
+                    .append(r.status()).append(':')
                     .append(r.batteryPercent()).append(':')
                     .append(r.lastKnownPercent()).append(':')
                     .append(r.charging()).append(':')
+                    .append(r.connectionLabel()).append(':')
                     .append(r.isSimulated()).append(';');
         }
         return sb.toString();
@@ -1106,6 +1257,7 @@ public final class NativeTaskbarWidget {
             return false;
         }
         try {
+            updateTooltipOnThread(testItems);
             HWND parentCheck = User32Ex.INSTANCE.GetAncestor(hwndChild, GA_PARENT);
             long expectedPeer = Pointer.nativeValue(parentHwnd.getPointer());
             long actualPeer = parentCheck != null ? Pointer.nativeValue(parentCheck.getPointer()) : 0L;

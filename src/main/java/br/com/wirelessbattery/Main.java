@@ -1,5 +1,7 @@
 package br.com.wirelessbattery;
 
+import br.com.wirelessbattery.audio.WindowsAudioOutputInspector;
+import br.com.wirelessbattery.bluetooth.WindowsBluetoothScanner;
 import br.com.wirelessbattery.config.AppSettings;
 import br.com.wirelessbattery.config.AppVersion;
 import br.com.wirelessbattery.config.SingleInstanceGuard;
@@ -13,8 +15,11 @@ import br.com.wirelessbattery.device.DeviceManager;
 import br.com.wirelessbattery.device.GameSirCyclone2;
 import br.com.wirelessbattery.device.GameSirCyclone2Config;
 import br.com.wirelessbattery.device.HidServiceProvider;
+import br.com.wirelessbattery.device.QcyT13Bluetooth;
+import br.com.wirelessbattery.device.QcyT13Config;
 import br.com.wirelessbattery.diagnostics.AppLogger;
 import br.com.wirelessbattery.diagnostics.HidDiagnosticsService;
+import br.com.wirelessbattery.selection.CategoryDeviceSelector;
 import br.com.wirelessbattery.simulation.SimulationManager;
 import br.com.wirelessbattery.ui.MainWindow;
 import br.com.wirelessbattery.ui.ThemeManager;
@@ -71,6 +76,11 @@ public final class Main {
             DeluxM800ProConfig m800Config = DeluxM800ProConfig.loadFromEnvironment();
             AkkoVergeS9Config akkoConfig = AkkoVergeS9Config.loadFromEnvironment();
             GameSirCyclone2Config cyclone2Config = GameSirCyclone2Config.loadFromEnvironment();
+            QcyT13Config qcyConfig = QcyT13Config.loadFromEnvironment();
+            WindowsBluetoothScanner bluetoothScanner = new WindowsBluetoothScanner();
+            WindowsAudioOutputInspector audioOutputInspector = new WindowsAudioOutputInspector();
+            CategoryDeviceSelector categorySelector = new CategoryDeviceSelector(audioOutputInspector, logger);
+
             HidDiagnosticsService diagnosticsService = new HidDiagnosticsService(
                     hidProvider, m800Config, akkoConfig, cyclone2Config, logger
             );
@@ -87,7 +97,7 @@ public final class Main {
                     () -> new DeluxM800Pro(hidProvider, m800Config, logger)
             ));
 
-            // 2. Headset: Akko S9 Ultra / Verge S9
+            // 2. Headset (2.4 GHz): Akko S9 Ultra / Verge S9
             deviceManager.registerDriver(new DeviceDriverRegistry.DriverRegistration(
                     AkkoVergeS9.DEVICE_ID,
                     AkkoVergeS9.DISPLAY_NAME,
@@ -111,7 +121,19 @@ public final class Main {
                     () -> new GameSirCyclone2(hidProvider, cyclone2Config, logger)
             ));
 
-            logger.info("Drivers registrados: Delux M800 Pro, Akko S9 Ultra e GameSir Cyclone 2.");
+            // 4. Headset (Bluetooth): QCY T13
+            deviceManager.registerDriver(new DeviceDriverRegistry.DriverRegistration(
+                    QcyT13Bluetooth.DEVICE_ID,
+                    QcyT13Bluetooth.DISPLAY_NAME,
+                    4,
+                    false,
+                    true,
+                    -1,
+                    (vid, pid) -> false,
+                    () -> new QcyT13Bluetooth(bluetoothScanner, qcyConfig, logger)
+            ));
+
+            logger.info("Drivers registrados: Delux M800 Pro, Akko S9 Ultra, GameSir Cyclone 2 e QCY T13 (Bluetooth).");
 
             AtomicBoolean servicesClosed = new AtomicBoolean(false);
             AtomicReference<MainWindow> windowRef = new AtomicReference<>();
@@ -148,6 +170,7 @@ public final class Main {
                     simulationManager,
                     diagnosticsService,
                     logger,
+                    categorySelector,
                     () -> {
                         closeServicesOnce.run();
                         System.exit(0);

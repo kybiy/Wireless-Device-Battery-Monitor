@@ -99,6 +99,8 @@ public final class DeviceCardPanel extends JPanel {
     }
 
     public void updateReading(DeviceReading reading) {
+        boolean deviceChanged = this.currentReading != null
+                && !this.currentReading.deviceId().equals(reading.deviceId());
         this.currentReading = reading;
         nameLabel.setText(reading.displayName());
         subtitleLabel.setText(buildSubtitle(reading));
@@ -108,21 +110,28 @@ public final class DeviceCardPanel extends JPanel {
             int pct = reading.batteryPercent();
             percentLabel.setText(pct + "%");
             chargingIconLabel.setVisible(reading.charging());
-            animateProgressTo(pct);
-        } else if (reading.hasLastKnownPercent()
-                && (reading.status() == ConnectionStatus.ASLEEP || reading.status() == ConnectionStatus.DISCONNECTED)) {
+            updateProgressBar(pct, deviceChanged);
+        } else if (reading.hasLastKnownPercent() && shouldShowLastKnownReading(reading.status())) {
             int last = reading.lastKnownPercent();
             percentLabel.setText(last + "%");
             chargingIconLabel.setVisible(false);
-            animateProgressTo(last);
+            updateProgressBar(last, deviceChanged);
         } else {
             percentLabel.setText("--%");
             chargingIconLabel.setVisible(false);
-            animateProgressTo(0);
+            updateProgressBar(0, deviceChanged);
         }
 
         refreshThemeColors();
         repaint();
+    }
+
+    private static boolean shouldShowLastKnownReading(ConnectionStatus status) {
+        return status == ConnectionStatus.ASLEEP
+                || status == ConnectionStatus.DISCONNECTED
+                || status == ConnectionStatus.TIMEOUT
+                || status == ConnectionStatus.READ_FAILED
+                || status == ConnectionStatus.NO_RESPONSE;
     }
 
     private String buildSubtitle(DeviceReading r) {
@@ -138,11 +147,20 @@ public final class DeviceCardPanel extends JPanel {
             case OPEN_FAILED -> "Falha ao abrir interface HID · " + via;
             case READ_FAILED -> "Falha de leitura · " + via;
             case TIMEOUT -> "Timeout de leitura · " + via;
-            case PENDING_PROTOCOL, BATTERY_UNAVAILABLE -> "Leitura indisponível";
+            case PENDING_PROTOCOL -> "Leitura indisponível";
+            case BATTERY_UNAVAILABLE -> "Bluetooth".equalsIgnoreCase(via)
+                    ? "Conectado · Bluetooth (leitura indisponível)"
+                    : "Leitura indisponível";
             case ERROR -> "Erro de leitura · " + via;
-            case DISCONNECTED -> r.hasLastKnownPercent()
-                    ? "Desconectado · Última às " + (r.lastKnownAt() != null ? r.lastKnownAt().format(TIME_FMT) : "--:--")
-                    : "Desconectado · " + via;
+            case DISCONNECTED -> {
+                if (r.hasLastKnownPercent()) {
+                    yield "Desconectado · Última às " + (r.lastKnownAt() != null ? r.lastKnownAt().format(TIME_FMT) : "--:--");
+                }
+                if ("Sem conexão".equalsIgnoreCase(via) || r.deviceId().contains("-slot-")) {
+                    yield "Desconectado";
+                }
+                yield "Desconectado · " + via;
+            }
         };
         return base;
     }
@@ -198,6 +216,19 @@ public final class DeviceCardPanel extends JPanel {
     public void removeNotify() {
         progressAnimator.stop();
         super.removeNotify();
+    }
+
+    private void updateProgressBar(int target, boolean immediate) {
+        if (immediate) {
+            this.targetProgress = Math.max(0, Math.min(100, target));
+            this.animatedProgress = this.targetProgress;
+            progressAnimator.stop();
+            if (isShowing()) {
+                progressBar.repaint();
+            }
+            return;
+        }
+        animateProgressTo(target);
     }
 
     private void animateProgressTo(int target) {

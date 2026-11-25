@@ -4,11 +4,15 @@ import br.com.wirelessbattery.config.AppSettings;
 import br.com.wirelessbattery.config.AppVersion;
 import br.com.wirelessbattery.config.DisplayMode;
 import br.com.wirelessbattery.config.WindowsStartupManager;
+import br.com.wirelessbattery.device.BatteryDevice;
 import br.com.wirelessbattery.device.DeviceManager;
+import br.com.wirelessbattery.device.QcyT13Bluetooth;
 import br.com.wirelessbattery.diagnostics.AppLogger;
 import br.com.wirelessbattery.diagnostics.HidDiagnosticsService;
 import br.com.wirelessbattery.model.ConnectionStatus;
 import br.com.wirelessbattery.model.DeviceReading;
+import br.com.wirelessbattery.model.DeviceType;
+import br.com.wirelessbattery.selection.CategoryDeviceSelector;
 import br.com.wirelessbattery.simulation.SimulationManager;
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -29,6 +33,7 @@ import java.time.Duration;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +64,7 @@ public final class MainWindow extends JFrame {
     private final SimulationManager simulationManager;
     private final HidDiagnosticsService diagnosticsService;
     private final AppLogger logger;
+    private final CategoryDeviceSelector categorySelector;
     private final Runnable onExitCallback;
 
     private final JPanel rootPanel = new JPanel(new BorderLayout(0, 0));
@@ -86,6 +92,10 @@ public final class MainWindow extends JFrame {
     private final AtomicBoolean uiShuttingDown = new AtomicBoolean(false);
     private long lastKnownTaskbarPeer;
     private List<String> displayedCardIds;
+    private List<DeviceReading> latestSelectedReadings = List.of();
+    private boolean latestUsingSimulation;
+    private int latestRealCandidateCount;
+    private int latestSimCandidateCount;
     private Color footerIconColor;
     private boolean minimizedBootPending;
     private int minimizedBootRetryCount;
@@ -101,6 +111,28 @@ public final class MainWindow extends JFrame {
             AppLogger logger,
             Runnable onExitCallback
     ) {
+        this(
+                settings,
+                themeManager,
+                deviceManager,
+                simulationManager,
+                diagnosticsService,
+                logger,
+                new CategoryDeviceSelector(logger),
+                onExitCallback
+        );
+    }
+
+    public MainWindow(
+            AppSettings settings,
+            ThemeManager themeManager,
+            DeviceManager deviceManager,
+            SimulationManager simulationManager,
+            HidDiagnosticsService diagnosticsService,
+            AppLogger logger,
+            CategoryDeviceSelector categorySelector,
+            Runnable onExitCallback
+    ) {
         super("Wireless Battery");
         this.settings = settings;
         this.themeManager = themeManager;
@@ -108,6 +140,7 @@ public final class MainWindow extends JFrame {
         this.simulationManager = simulationManager;
         this.diagnosticsService = diagnosticsService;
         this.logger = logger;
+        this.categorySelector = categorySelector != null ? categorySelector : new CategoryDeviceSelector(logger);
         this.onExitCallback = onExitCallback;
 
         setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
@@ -297,26 +330,17 @@ public final class MainWindow extends JFrame {
     }
 
     private void refreshDisplayedCards() {
-        boolean simActive = simulationManager.isEnabled();
+        recomputeSelectedState();
+        boolean simActive = this.latestUsingSimulation;
         simulationCaptionLabel.setVisible(simActive);
         simulationAdjustLink.setText(simActive ? "· Ajustar simulação" : "· Simulação");
 
-        List<DeviceReading> activeList = new ArrayList<>();
-        if (simActive) {
-            activeList.addAll(simulationManager.getCurrentReadings());
-        } else {
-            for (DeviceReading r : deviceManager.getCurrentReadings()) {
-                if (shouldShowRealReading(r)) {
-                    activeList.add(r);
-                }
-            }
-        }
-
-        List<String> ids = activeList.stream().map(DeviceReading::deviceId).toList();
-        boolean layoutChanged = !ids.equals(displayedCardIds);
+        List<DeviceReading> activeList = this.latestSelectedReadings;
+        List<String> slotKeys = activeList.stream().map(MainWindow::slotKeyFor).toList();
+        boolean layoutChanged = !slotKeys.equals(displayedCardIds);
         if (layoutChanged) {
-            displayedCardIds = ids;
-            cardMap.keySet().retainAll(ids);
+            displayedCardIds = slotKeys;
+            cardMap.keySet().retainAll(slotKeys);
             cardsListPanel.removeAll();
         }
         if (activeList.isEmpty()) {
@@ -324,10 +348,11 @@ public final class MainWindow extends JFrame {
         } else {
             for (int i = 0; i < activeList.size(); i++) {
                 DeviceReading reading = activeList.get(i);
-                DeviceCardPanel card = cardMap.get(reading.deviceId());
+                String slotKey = slotKeys.get(i);
+                DeviceCardPanel card = cardMap.get(slotKey);
                 if (card == null) {
                     card = new DeviceCardPanel(themeManager, settings, reading);
-                    cardMap.put(reading.deviceId(), card);
+                    cardMap.put(slotKey, card);
                 } else {
                     card.updateReading(reading);
                 }
@@ -346,6 +371,91 @@ public final class MainWindow extends JFrame {
             cardsListPanel.revalidate();
             cardsListPanel.repaint();
         }
+    }
+
+    private void recomputeSelectedState() {
+        boolean simActive = simulationManager.isEnabled();
+        List<DeviceReading> realCandidates = deviceManager.getCurrentReadings();
+        int realVisibleCount = countVisibleRealReadings(realCandidates);
+
+        if (simActive) {
+            List<DeviceReading> simCandidates = simulationManager.getCandidateReadings();
+            Map<String, String> simContainerIds = Map.of(
+                    SimulationManager.SIM_QCY_T13_ID, "sim-bt-qcy-t13"
+            );
+            this.latestSelectedReadings = categorySelector.selectForDisplay(
+                    simCandidates,
+                    settings,
+                    true,
+                    simulationManager.isBluetoothAdapterAvailable(),
+                    simContainerIds,
+                    simulationManager.getSimulatedAudioOutputProvider()
+            );
+            this.latestUsingSimulation = true;
+            this.latestRealCandidateCount = realVisibleCount;
+            this.latestSimCandidateCount = simCandidates.size();
+        } else {
+            boolean btAdapterAvailable = isRealBluetoothAdapterAvailable(realCandidates);
+            Map<String, String> realContainerIds = collectRealContainerIds();
+            this.latestSelectedReadings = categorySelector.selectForDisplay(
+                    realCandidates,
+                    settings,
+                    false,
+                    btAdapterAvailable,
+                    realContainerIds
+            );
+            this.latestUsingSimulation = false;
+            this.latestRealCandidateCount = realVisibleCount;
+            this.latestSimCandidateCount = 0;
+        }
+    }
+
+    private int countVisibleRealReadings(List<DeviceReading> realCandidates) {
+        int count = 0;
+        for (DeviceReading r : realCandidates) {
+            if (shouldShowRealReading(r)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean isRealBluetoothAdapterAvailable(List<DeviceReading> realCandidates) {
+        for (DeviceReading r : realCandidates) {
+            if (QcyT13Bluetooth.DEVICE_ID.equals(r.deviceId())
+                    && r.detailMessage() != null
+                    && r.detailMessage().contains("Adaptador Bluetooth ausente")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Map<String, String> collectRealContainerIds() {
+        Map<String, String> map = new HashMap<>();
+        for (BatteryDevice device : deviceManager.getRegisteredDevices()) {
+            if (device instanceof QcyT13Bluetooth qcy) {
+                String containerId = qcy.getLastMatchedContainerId();
+                if (containerId != null && !containerId.isBlank()) {
+                    map.put(qcy.getId(), containerId);
+                }
+            }
+        }
+        return map;
+    }
+
+    private static String slotKeyFor(DeviceReading reading) {
+        return reading.deviceType() != DeviceType.OTHER
+                ? reading.deviceType().name()
+                : reading.deviceId();
+    }
+
+    public List<DeviceReading> getLatestSelectedReadings() {
+        return latestSelectedReadings;
+    }
+
+    public List<DeviceReading> getTaskbarWidgetReadingsSnapshot() {
+        return taskbarWidget.getCurrentItems();
     }
 
     private void logUiSummaryIfChanged(List<DeviceReading> activeList, boolean simActive) {
@@ -446,25 +556,7 @@ public final class MainWindow extends JFrame {
     }
 
     private void syncExternalIndicators() {
-        List<DeviceReading> visibleReal = new ArrayList<>();
-        for (DeviceReading r : deviceManager.getCurrentReadings()) {
-            if (shouldShowRealReading(r)) {
-                visibleReal.add(r);
-            }
-        }
-
-        List<DeviceReading> indicatorItems;
-        boolean anyRealDetected = !visibleReal.isEmpty();
-        if (!anyRealDetected && simulationManager.isEnabled()) {
-            indicatorItems = new ArrayList<>();
-            for (DeviceReading r : simulationManager.getCurrentReadings()) {
-                if (settings.isShowDisconnectedDevices() || r.hasBatteryPercent() || r.status() == ConnectionStatus.ASLEEP) {
-                    indicatorItems.add(r);
-                }
-            }
-        } else {
-            indicatorItems = visibleReal;
-        }
+        List<DeviceReading> indicatorItems = this.latestSelectedReadings;
 
         DisplayMode mode = settings.getDisplayMode();
         boolean wantTray = mode.usesSystemTray();
@@ -473,9 +565,11 @@ public final class MainWindow extends JFrame {
         if (wantTaskbar) {
             taskbarWidget.updateReadings(indicatorItems);
             taskbarWidget.setWidgetEnabled(true);
-            boolean usingSim = !anyRealDetected && simulationManager.isEnabled();
-            int simCount = simulationManager.isEnabled() ? simulationManager.getCurrentReadings().size() : 0;
-            String diag = taskbarWidget.formatDiagnosticSummary(usingSim, visibleReal.size(), simCount);
+            String diag = taskbarWidget.formatDiagnosticSummary(
+                    this.latestUsingSimulation,
+                    this.latestRealCandidateCount,
+                    this.latestSimCandidateCount
+            );
             if (!diag.equals(lastWidgetDiagSummary)) {
                 lastWidgetDiagSummary = diag;
                 logger.info(diag);
@@ -648,6 +742,10 @@ public final class MainWindow extends JFrame {
             syncExternalIndicators();
         }
 
+        if (!latestUsingSimulation && hasMultipleConnectedRealHeadsets()) {
+            refreshDisplayedCards();
+        }
+
         if (minimizedBootPending) {
             minimizedBootRetryCount++;
             syncExternalIndicators();
@@ -664,6 +762,22 @@ public final class MainWindow extends JFrame {
                 restoreFromTray();
             }
         }
+    }
+
+    private boolean hasMultipleConnectedRealHeadsets() {
+        int connectedHeadsets = 0;
+        for (DeviceReading r : deviceManager.getCurrentReadings()) {
+            if (r.deviceType() == DeviceType.HEADSET
+                    && (r.status().isOnline()
+                            || (r.status() == ConnectionStatus.BATTERY_UNAVAILABLE
+                                    && "Bluetooth".equalsIgnoreCase(r.connectionLabel())))) {
+                connectedHeadsets++;
+                if (connectedHeadsets >= 2) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public void minimizeToTray() {

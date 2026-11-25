@@ -22,6 +22,9 @@ public final class SimulatedBatteryDevice implements BatteryDevice {
     private boolean charging;
     private boolean connected;
     private boolean asleep;
+    private boolean receiverPresentOff;
+    private boolean batteryUnavailable;
+    private boolean transientFailure;
     private Integer lastKnownPercent;
     private LocalTime lastKnownAt;
 
@@ -98,7 +101,7 @@ public final class SimulatedBatteryDevice implements BatteryDevice {
 
     public synchronized void setBatteryPercent(int percent) {
         this.batteryPercent = clampPercent(percent);
-        if (connected && !asleep) {
+        if (connected && !asleep && !batteryUnavailable && !transientFailure && !receiverPresentOff) {
             this.lastKnownPercent = this.batteryPercent;
             this.lastKnownAt = LocalTime.now().withNano(0);
         }
@@ -112,6 +115,7 @@ public final class SimulatedBatteryDevice implements BatteryDevice {
         this.charging = charging;
         if (charging) {
             this.asleep = false;
+            clearSimulatedFaults();
         }
     }
 
@@ -120,9 +124,11 @@ public final class SimulatedBatteryDevice implements BatteryDevice {
     }
 
     public synchronized void setConnected(boolean connected) {
+        clearSimulatedFaults();
         this.connected = connected;
         if (!connected) {
             this.asleep = false;
+            this.charging = false;
         } else if (!asleep) {
             this.lastKnownPercent = this.batteryPercent;
             this.lastKnownAt = LocalTime.now().withNano(0);
@@ -137,6 +143,7 @@ public final class SimulatedBatteryDevice implements BatteryDevice {
         this.asleep = asleep;
         if (asleep) {
             this.charging = false;
+            clearSimulatedFaults();
             if (lastKnownPercent == null) {
                 lastKnownPercent = batteryPercent;
                 lastKnownAt = LocalTime.now().withNano(0);
@@ -144,8 +151,131 @@ public final class SimulatedBatteryDevice implements BatteryDevice {
         }
     }
 
+    public synchronized boolean isReceiverPresentOff() {
+        return receiverPresentOff;
+    }
+
+    public synchronized void setReceiverPresentOff(boolean receiverPresentOff) {
+        this.receiverPresentOff = receiverPresentOff;
+        if (receiverPresentOff) {
+            this.connected = false;
+            this.asleep = false;
+            this.charging = false;
+            this.batteryUnavailable = false;
+            this.transientFailure = false;
+        }
+    }
+
+    public synchronized boolean isBatteryUnavailable() {
+        return batteryUnavailable;
+    }
+
+    public synchronized void setBatteryUnavailable(boolean batteryUnavailable) {
+        this.batteryUnavailable = batteryUnavailable;
+        if (batteryUnavailable) {
+            this.connected = true;
+            this.asleep = false;
+            this.charging = false;
+            this.receiverPresentOff = false;
+            this.transientFailure = false;
+            this.lastKnownPercent = null;
+            this.lastKnownAt = null;
+        }
+    }
+
+    public synchronized boolean isTransientFailure() {
+        return transientFailure;
+    }
+
+    public synchronized void setTransientFailure(boolean transientFailure) {
+        this.transientFailure = transientFailure;
+        if (transientFailure) {
+            this.asleep = false;
+            this.charging = false;
+            this.receiverPresentOff = false;
+            this.batteryUnavailable = false;
+        }
+    }
+
+    public synchronized void clearSimulatedFaults() {
+        this.receiverPresentOff = false;
+        this.batteryUnavailable = false;
+        this.transientFailure = false;
+    }
+
+    public synchronized void clearLastKnown() {
+        this.lastKnownPercent = null;
+        this.lastKnownAt = null;
+    }
+
     @Override
     public synchronized DeviceReading readBattery() {
+        return readBattery(true);
+    }
+
+    public synchronized DeviceReading readBattery(boolean bluetoothAdapterAvailable) {
+        if (!bluetoothAdapterAvailable && "Bluetooth".equalsIgnoreCase(connectionDescription)) {
+            return DeviceReading.simulated(
+                    id,
+                    displayName,
+                    deviceType,
+                    null,
+                    false,
+                    false,
+                    connectionDescription,
+                    "Simulação: adaptador Bluetooth ausente ou desativado.",
+                    null,
+                    null
+            );
+        }
+        if (transientFailure) {
+            return new DeviceReading(
+                    id,
+                    displayName,
+                    deviceType,
+                    null,
+                    false,
+                    ConnectionStatus.TIMEOUT,
+                    connectionDescription,
+                    DataSourceType.SIMULATED,
+                    "Simulação: falha temporária de leitura (última leitura preservada).",
+                    LocalTime.now().withNano(0),
+                    lastKnownPercent,
+                    lastKnownAt
+            );
+        }
+        if (batteryUnavailable) {
+            return new DeviceReading(
+                    id,
+                    displayName,
+                    deviceType,
+                    null,
+                    false,
+                    ConnectionStatus.BATTERY_UNAVAILABLE,
+                    connectionDescription,
+                    DataSourceType.SIMULATED,
+                    "Simulação: conectado com leitura de bateria indisponível.",
+                    LocalTime.now().withNano(0),
+                    null,
+                    null
+            );
+        }
+        if (receiverPresentOff) {
+            return new DeviceReading(
+                    id,
+                    displayName,
+                    deviceType,
+                    null,
+                    false,
+                    ConnectionStatus.ASLEEP,
+                    connectionDescription,
+                    DataSourceType.SIMULATED,
+                    "Simulação: receptor presente, dispositivo desligado.",
+                    LocalTime.now().withNano(0),
+                    lastKnownPercent,
+                    lastKnownAt
+            );
+        }
         if (connected && asleep) {
             return new DeviceReading(
                     id,

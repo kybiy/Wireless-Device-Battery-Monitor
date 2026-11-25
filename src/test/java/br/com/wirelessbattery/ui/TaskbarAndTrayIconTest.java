@@ -250,6 +250,97 @@ class TaskbarAndTrayIconTest {
     }
 
     @Test
+    void taskbarWidgetTooltipAndItemsUpdateCleanlyAcrossHeadsetSwitches(@TempDir Path tempDir) throws Exception {
+        DeviceReading mouse = DeviceReading.realConnected(
+                "delux-m800-pro", "Delux M800 Pro", DeviceType.MOUSE, 85, false, "2.4 GHz", "OK"
+        );
+        DeviceReading gamepad = DeviceReading.realConnected(
+                "gamesir-cyclone-2", "GameSir Cyclone 2", DeviceType.GAMEPAD, 90, false, "2.4 GHz / USB", "OK"
+        );
+        DeviceReading akko = DeviceReading.realConnected(
+                "akko-verge-s9", "Akko Verge S9 Ultra", DeviceType.HEADSET, 62, false, "2.4 GHz", "OK"
+        );
+        DeviceReading qcy = DeviceReading.realConnected(
+                "qcy-t13", "QCY T13", DeviceType.HEADSET, 74, false, "Bluetooth", "OK"
+        );
+        DeviceReading qcyUnavailable = DeviceReading.realBatteryUnavailable(
+                "qcy-t13", "QCY T13", DeviceType.HEADSET, "Bluetooth", "Sem leitura HFP/PnP"
+        );
+        DeviceReading genericNone = DeviceReading.realDisconnected(
+                "headset-slot", "Fone", DeviceType.HEADSET, "Sem conexão", "Nenhum headset conectado"
+        );
+
+        List<DeviceReading> withAkko = List.of(mouse, akko, gamepad);
+        List<DeviceReading> withQcy = List.of(mouse, qcy, gamepad);
+        List<DeviceReading> withQcyNoBatt = List.of(mouse, qcyUnavailable, gamepad);
+        List<DeviceReading> withNone = List.of(mouse, genericNone, gamepad);
+
+        // 1. Tooltip nativo em texto puro (NativeTaskbarWidget.buildPlainTooltip)
+        String tipAkko = NativeTaskbarWidget.buildPlainTooltip(withAkko);
+        assertTrue(tipAkko.contains("Akko Verge S9 Ultra: 62% [2.4 GHz]"), tipAkko);
+        assertFalse(tipAkko.contains("QCY T13"), tipAkko);
+
+        String tipQcy = NativeTaskbarWidget.buildPlainTooltip(withQcy);
+        assertTrue(tipQcy.contains("QCY T13: 74% [Bluetooth]"), tipQcy);
+        assertFalse(tipQcy.contains("Akko"), tipQcy);
+        assertFalse(tipQcy.contains("62%"), tipQcy);
+
+        String tipQcyUnavail = NativeTaskbarWidget.buildPlainTooltip(withQcyNoBatt);
+        assertTrue(tipQcyUnavail.contains("QCY T13: Conectado · Bluetooth (leitura indisponível)"), tipQcyUnavail);
+        assertFalse(tipQcyUnavail.contains("74%"), tipQcyUnavail);
+
+        String tipNone = NativeTaskbarWidget.buildPlainTooltip(withNone);
+        assertTrue(tipNone.contains("Fone: Desconectado"), tipNone);
+        assertFalse(tipNone.contains("62%"), tipNone);
+        assertFalse(tipNone.contains("74%"), tipNone);
+
+        if (GraphicsEnvironment.isHeadless()) {
+            return;
+        }
+
+        // 2. Atualização do TaskbarWidgetWindow mantém 3 slots na ordem [MOUSE, HEADSET, GAMEPAD] e limpa tooltip
+        AppSettings settings = new AppSettings(tempDir.resolve("tooltip-swap.properties"));
+        ThemeManager themeManager = new ThemeManager();
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            TaskbarWidgetWindow widget = new TaskbarWidgetWindow(
+                    settings, themeManager, () -> {}, () -> {}, () -> {}, () -> {}
+            );
+            try {
+                javax.swing.JComponent pane = (javax.swing.JComponent) widget.getContentPane();
+
+                widget.updateReadings(List.of(gamepad, akko, mouse));
+                assertEquals(List.of(DeviceType.MOUSE, DeviceType.HEADSET, DeviceType.GAMEPAD),
+                        widget.getCurrentItems().stream().map(DeviceReading::deviceType).toList());
+                assertEquals("Akko Verge S9 Ultra", widget.getCurrentItems().get(1).displayName());
+                assertTrue(pane.getToolTipText().contains("Akko Verge S9 Ultra: 62% [2.4 GHz]"));
+                assertFalse(pane.getToolTipText().contains("QCY T13"));
+
+                widget.updateReadings(List.of(gamepad, qcy, mouse));
+                assertEquals(3, widget.getCurrentItems().size());
+                assertEquals("QCY T13", widget.getCurrentItems().get(1).displayName());
+                assertTrue(pane.getToolTipText().contains("QCY T13: 74% [Bluetooth]"));
+                assertFalse(pane.getToolTipText().contains("Akko"));
+                assertFalse(pane.getToolTipText().contains("62%"));
+
+                widget.updateReadings(withQcyNoBatt);
+                assertEquals(3, widget.getCurrentItems().size());
+                assertTrue(pane.getToolTipText().contains("QCY T13: Conectado · Bluetooth (leitura indisponível)"));
+                assertFalse(pane.getToolTipText().contains("74%"));
+
+                widget.updateReadings(withNone);
+                assertEquals(3, widget.getCurrentItems().size());
+                assertEquals("Fone", widget.getCurrentItems().get(1).displayName());
+                assertNull(widget.getCurrentItems().get(1).lastKnownPercent());
+                assertTrue(pane.getToolTipText().contains("Fone: Desconectado"));
+                assertFalse(pane.getToolTipText().contains("62%"));
+                assertFalse(pane.getToolTipText().contains("74%"));
+            } finally {
+                widget.shutdown();
+            }
+        });
+    }
+
+    @Test
     void taskbarWidgetUsesYellowAtOrBelowMediumThresholdAndRedAtOrBelowLow(@TempDir Path tempDir) {
         AppSettings settings = new AppSettings(tempDir.resolve("colors.properties"));
         Color darkFg = new Color(0xF1, 0xF3, 0xF5);
