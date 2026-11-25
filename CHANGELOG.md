@@ -4,6 +4,16 @@ All notable changes to **Wireless Battery Monitor (Java Edition)** are documente
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-25
+
+### Added
+- **Bluetooth Battery Monitoring for QCY T13 ANC (`QCY-T13 ANC`):** added passive, read-only native Windows Bluetooth battery detection (`WindowsBluetoothScanner` + `QcyT13Bluetooth`) using SetupAPI/Cfgmgr32 PnP device properties (`DEVPKEY_Bluetooth_Battery`, `PKEY_Devices_BatteryLife`, `DEVPKEY_Bluetooth_IsConnected`) consolidated by `ContainerId`, without opening RFCOMM/GATT connections or interfering with A2DP/HFP audio. Real Bluetooth battery reading on Windows 11 was confirmed by the user (`20%` in Windows and `20%` in the app widget). Other untested Bluetooth models are not declared physically compatible.
+- **Automatic Headset Selection & Windows Default Audio Output Detection:** added `CategoryDeviceSelector` and `WindowsAudioOutputInspector` (Core Audio / MMDevice COM API via JNA) to share a unified headset slot across the main window cards, system tray, and native Win32 taskbar widget, automatically selecting between **Akko Verge S9 / S9 Ultra** and **QCY T13 ANC** based on connectivity and the active Windows default audio render endpoint.
+- **Improved Simulation Scenarios & Updated Tooltips:** expanded `SimulationManager` / `SimulationControlPanel` with multi-headset scenarios and refined device tooltips in the main UI, tray, and native taskbar widget.
+
+### Changed
+- **Preserved Native Win32 Taskbar Widget, Memory Optimizations & Upgradable Installer:** kept `NativeTaskbarWidget` (`WS_CHILD` on `Shell_TrayWnd` with `Win+D` persistence), SVG caching / idle optimizations, all existing USB HID protocols (Delux M800 Pro, Akko Verge S9 / S9 Ultra, GameSir Cyclone 2), and the per-user upgradable Windows installer (`UpgradeCode` `{7C2F4B5E-3D9A-4E8C-91F2-8A6B4D2E1C90}` and directory-scoped `CloseHelper`).
+
 ## [1.1.1] - 2026-11-24
 
 O Delux M800 Pro passa a interpretar separadamente percentual e carregamento. Valores acima de 100 passam a indicar leitura inválida. A inicialização automática respeita a desativação feita pelo usuário no Gerenciador de Tarefas.

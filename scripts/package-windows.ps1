@@ -1,7 +1,7 @@
 param(
     [string] $Jdk = 'dist/toolchain/jdk-25.0.5.1+2',
     [string] $Wix = 'dist/toolchain/wix',
-    [string] $OutputDirectory = 'dist/v1.1.1'
+    [string] $OutputDirectory = 'dist/v1.2.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,7 +79,7 @@ try {
         '--name', 'WirelessBattery',
         '--app-version', $appVersion,
         '--vendor', 'kybiy',
-        '--description', 'Wireless Device Battery Monitor for Windows 11 (Delux M800 Pro, Akko S9 Ultra, GameSir Cyclone 2)'
+        '--description', 'Wireless Device Battery Monitor for Windows 11 (Delux M800 Pro, Akko S9 Ultra, GameSir Cyclone 2, QCY T13 ANC)'
     )
 
     Write-Host "Building app-image for WirelessBattery v$appVersion..."
