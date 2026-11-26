@@ -5,7 +5,7 @@
 O **Wireless Battery Monitor** mostra a carga dos seus periféricos sem fio na janela principal, na bandeja do sistema e diretamente ao lado do relógio do Windows.
 
 - **Última versão estável:** [`v1.2.0`](https://github.com/kybiy/Wireless-Device-Battery-Monitor/releases)
-- **Desenvolvimento ativo:** os recursos de robustez e comunidade da `v1.3.0` estão em andamento na branch `feat/robustness-v1.3.0` (itens marcados como *(v1.3.0 em desenvolvimento)* abaixo já existem nesta branch e aguardam validação física completa antes do lançamento).
+- **Desenvolvimento ativo (código-fonte pré-lançamento `v1.3.0`):** os recursos de robustez e comunidade da `v1.3.0` estão no código-fonte (`main` / `feat/robustness-v1.3.0`), enquanto a **`v1.2.0` continua sendo a última release estável publicada**. Itens marcados como *(v1.3.0 em desenvolvimento)* abaixo aguardam validação física completa antes da publicação oficial da `v1.3.0`.
 
 ![Janela do monitor no tema escuro com a porcentagem de bateria do mouse, do headset e do controle](docs/screenshot.png)
 

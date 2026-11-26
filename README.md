@@ -5,7 +5,7 @@
 **Wireless Battery Monitor** displays the battery level of your wireless peripherals in a compact desktop window, in the Windows system tray, and directly next to the Windows clock.
 
 - **Latest stable release:** [`v1.2.0`](https://github.com/kybiy/Wireless-Device-Battery-Monitor/releases)
-- **Active development:** `v1.3.0` robustness and community features are in progress on branch `feat/robustness-v1.3.0` (features marked *(v1.3.0 WIP)* below are present on this branch and awaiting full physical validation before release).
+- **Active development (`v1.3.0` pre-release source):** `v1.3.0` robustness and community features have been merged into source (`main` / `feat/robustness-v1.3.0`), while **`v1.2.0` remains the latest published stable release**. Features marked *(v1.3.0 WIP)* below exist in source and are awaiting full physical peripheral validation before publishing a `v1.3.0` release.
 
 ![Main dark-theme window showing battery percentages for mouse, headset, and controller](docs/screenshot.png)
 

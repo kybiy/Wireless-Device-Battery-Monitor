@@ -2,6 +2,7 @@ package br.com.wirelessbattery.ui;
 
 import br.com.wirelessbattery.config.AppSettings;
 import br.com.wirelessbattery.diagnostics.AppLogger;
+import br.com.wirelessbattery.i18n.AppLanguage;
 import br.com.wirelessbattery.i18n.I18n;
 import br.com.wirelessbattery.model.DeviceReading;
 import br.com.wirelessbattery.model.DeviceType;
@@ -53,7 +54,7 @@ public final class TaskbarWidgetWindow extends JWindow {
     private final Runnable onExit;
 
     private final NativeTaskbarWidget nativeWidget;
-    private volatile I18n i18n = new I18n();
+    private volatile I18n i18n = new I18n(AppLanguage.PT_BR);
     private final boolean preferNativeBackend;
     private boolean loggedFallbackToSwing;
 
@@ -112,6 +113,12 @@ public final class TaskbarWidgetWindow extends JWindow {
             this.logger.info("[WIDGET-NATIVE] Backend Swing (JWindow) selecionado ("
                     + BACKEND_PROPERTY + "=" + backendProp + ").");
         }
+        if (settings != null && settings.getLanguage() != null && settings.getLanguage() != AppLanguage.SYSTEM) {
+            this.i18n = new I18n(settings.getLanguage());
+            if (this.nativeWidget != null) {
+                this.nativeWidget.setI18n(this.i18n);
+            }
+        }
 
         setType(Type.UTILITY);
         setAlwaysOnTop(true);
@@ -155,7 +162,7 @@ public final class TaskbarWidgetWindow extends JWindow {
     }
 
     public void setI18n(I18n i18n) {
-        this.i18n = i18n != null ? i18n : new I18n();
+        this.i18n = i18n != null ? i18n : new I18n(AppLanguage.PT_BR);
         if (nativeWidget != null) {
             nativeWidget.setI18n(this.i18n);
         }
