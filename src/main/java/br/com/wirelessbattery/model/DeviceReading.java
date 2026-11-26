@@ -1,6 +1,10 @@
 package br.com.wirelessbattery.model;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.Objects;
 
 /**
@@ -8,8 +12,8 @@ import java.util.Objects;
  *
  * Quando uma leitura atual não está disponível (ex.: dispositivo desconectado ou em repouso),
  * {@code batteryPercent} permanece {@code null}. Opcionalmente, {@code lastKnownPercent}
- * preserva o último valor real conhecido para exibição diferenciada, sem nunca ser tratado
- * como leitura atual.
+ * preserva o último valor real conhecido e {@code lastKnownInstant} o timestamp real dessa
+ * leitura válida (nunca o horário de uma tentativa de comunicação com falha).
  */
 public record DeviceReading(
         String deviceId,
@@ -23,7 +27,9 @@ public record DeviceReading(
         String detailMessage,
         LocalTime updatedAt,
         Integer lastKnownPercent,
-        LocalTime lastKnownAt
+        LocalTime lastKnownAt,
+        Instant validReadingInstant,
+        Instant lastKnownInstant
 ) {
     public DeviceReading {
         Objects.requireNonNull(deviceId, "deviceId não pode ser nulo");
@@ -46,6 +52,61 @@ public record DeviceReading(
         if (updatedAt == null) {
             updatedAt = LocalTime.now().withNano(0);
         }
+        if (validReadingInstant == null && batteryPercent != null) {
+            validReadingInstant = inferInstantFromLocalTime(updatedAt);
+        }
+        if (lastKnownInstant == null && lastKnownPercent != null) {
+            lastKnownInstant = inferInstantFromLocalTime(lastKnownAt != null ? lastKnownAt : updatedAt);
+        }
+    }
+
+    /**
+     * Construtor de compatibilidade com 12 argumentos utilizado por testes e chamadores existentes.
+     */
+    public DeviceReading(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            Integer batteryPercent,
+            boolean charging,
+            ConnectionStatus status,
+            String connectionLabel,
+            DataSourceType sourceType,
+            String detailMessage,
+            LocalTime updatedAt,
+            Integer lastKnownPercent,
+            LocalTime lastKnownAt
+    ) {
+        this(
+                deviceId,
+                displayName,
+                deviceType,
+                batteryPercent,
+                charging,
+                status,
+                connectionLabel,
+                sourceType,
+                detailMessage,
+                updatedAt,
+                lastKnownPercent,
+                lastKnownAt,
+                batteryPercent != null ? inferInstantFromLocalTime(updatedAt) : null,
+                lastKnownPercent != null ? inferInstantFromLocalTime(lastKnownAt != null ? lastKnownAt : updatedAt) : null
+        );
+    }
+
+    private static Instant inferInstantFromLocalTime(LocalTime time) {
+        if (time == null) {
+            return Instant.now();
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate today = LocalDate.now(zone);
+        LocalDateTime candidate = LocalDateTime.of(today, time);
+        Instant instant = candidate.atZone(zone).toInstant();
+        if (instant.isAfter(Instant.now().plusSeconds(5))) {
+            instant = candidate.minusDays(1).atZone(zone).toInstant();
+        }
+        return instant;
     }
 
     public boolean isSimulated() {
@@ -60,6 +121,10 @@ public record DeviceReading(
         return lastKnownPercent != null;
     }
 
+    public Instant effectiveReadingTimestamp() {
+        return hasBatteryPercent() ? validReadingInstant : lastKnownInstant;
+    }
+
     public String formattedBatteryText() {
         if (hasBatteryPercent()) {
             return batteryPercent + "%";
@@ -71,6 +136,10 @@ public record DeviceReading(
     }
 
     public DeviceReading withLastKnown(Integer percent, LocalTime at) {
+        return withLastKnown(percent, at, percent != null ? inferInstantFromLocalTime(at) : null);
+    }
+
+    public DeviceReading withLastKnown(Integer percent, LocalTime at, Instant instant) {
         return new DeviceReading(
                 deviceId,
                 displayName,
@@ -83,7 +152,9 @@ public record DeviceReading(
                 detailMessage,
                 updatedAt,
                 percent,
-                at
+                at,
+                validReadingInstant,
+                percent != null ? (instant != null ? instant : inferInstantFromLocalTime(at)) : null
         );
     }
 
@@ -100,7 +171,9 @@ public record DeviceReading(
                 newDetail != null ? newDetail : detailMessage,
                 updatedAt,
                 lastKnownPercent,
-                lastKnownAt
+                lastKnownAt,
+                validReadingInstant,
+                lastKnownInstant
         );
     }
 
@@ -113,7 +186,8 @@ public record DeviceReading(
             String connectionLabel,
             String detailMessage
     ) {
-        LocalTime now = LocalTime.now().withNano(0);
+        Instant instantNow = Instant.now();
+        LocalTime now = LocalTime.ofInstant(instantNow, ZoneId.systemDefault()).withNano(0);
         return new DeviceReading(
                 deviceId,
                 displayName,
@@ -126,7 +200,9 @@ public record DeviceReading(
                 detailMessage,
                 now,
                 percent,
-                now
+                now,
+                instantNow,
+                instantNow
         );
     }
 
@@ -210,6 +286,26 @@ public record DeviceReading(
         return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.PENDING_PROTOCOL, connectionLabel, detailMessage);
     }
 
+    public static DeviceReading realReadOnlyBlocked(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            String connectionLabel,
+            String detailMessage
+    ) {
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.READ_ONLY_BLOCKED, connectionLabel, detailMessage);
+    }
+
+    public static DeviceReading realMonitoringDisabled(
+            String deviceId,
+            String displayName,
+            DeviceType deviceType,
+            String connectionLabel,
+            String detailMessage
+    ) {
+        return realStatusOnly(deviceId, displayName, deviceType, ConnectionStatus.MONITORING_DISABLED, connectionLabel, detailMessage);
+    }
+
     public static DeviceReading realError(
             String deviceId,
             String displayName,
@@ -240,6 +336,8 @@ public record DeviceReading(
                 detailMessage,
                 LocalTime.now().withNano(0),
                 null,
+                null,
+                null,
                 null
         );
     }
@@ -256,7 +354,8 @@ public record DeviceReading(
             Integer lastKnownPercent,
             LocalTime lastKnownAt
     ) {
-        LocalTime now = LocalTime.now().withNano(0);
+        Instant instantNow = Instant.now();
+        LocalTime now = LocalTime.ofInstant(instantNow, ZoneId.systemDefault()).withNano(0);
         ConnectionStatus connStatus;
         if (!connected) {
             connStatus = ConnectionStatus.DISCONNECTED;
@@ -277,7 +376,11 @@ public record DeviceReading(
                 detailMessage,
                 now,
                 connected ? percent : lastKnownPercent,
-                connected ? now : lastKnownAt
+                connected ? now : lastKnownAt,
+                connected && percent != null ? instantNow : null,
+                connected && percent != null
+                        ? instantNow
+                        : (lastKnownPercent != null ? inferInstantFromLocalTime(lastKnownAt) : null)
         );
     }
 }

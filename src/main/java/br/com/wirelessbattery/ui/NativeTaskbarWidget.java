@@ -2,7 +2,11 @@ package br.com.wirelessbattery.ui;
 
 import br.com.wirelessbattery.config.AppSettings;
 import br.com.wirelessbattery.diagnostics.AppLogger;
+import br.com.wirelessbattery.i18n.AppLanguage;
+import br.com.wirelessbattery.i18n.I18n;
 import br.com.wirelessbattery.model.DeviceReading;
+import br.com.wirelessbattery.model.ReadingAgeFormatter;
+import java.time.Instant;
 import com.sun.jna.Callback;
 import com.sun.jna.Native;
 import com.sun.jna.Pointer;
@@ -155,10 +159,18 @@ public final class NativeTaskbarWidget {
 
     @Structure.FieldOrder({"cbSize", "dwFlags", "hwndTrack", "dwHoverTime"})
     public static class TRACKMOUSEEVENT extends Structure {
-        public int cbSize = size();
+        public int cbSize;
         public int dwFlags;
         public HWND hwndTrack;
         public int dwHoverTime;
+
+        static TRACKMOUSEEVENT create(int flags, HWND hwnd) {
+            TRACKMOUSEEVENT tme = new TRACKMOUSEEVENT();
+            tme.cbSize = tme.size();
+            tme.dwFlags = flags;
+            tme.hwndTrack = hwnd;
+            return tme;
+        }
     }
 
     @Structure.FieldOrder({"cx", "cy"})
@@ -176,13 +188,20 @@ public final class NativeTaskbarWidget {
 
     @Structure.FieldOrder({"cbSize", "dwICC"})
     public static class INITCOMMONCONTROLSEX extends Structure {
-        public int cbSize = size();
+        public int cbSize;
         public int dwICC;
+
+        static INITCOMMONCONTROLSEX create(int icc) {
+            INITCOMMONCONTROLSEX s = new INITCOMMONCONTROLSEX();
+            s.cbSize = s.size();
+            s.dwICC = icc;
+            return s;
+        }
     }
 
     @Structure.FieldOrder({"cbSize", "uFlags", "hwnd", "uId", "rect", "hinst", "lpszText", "lParam", "lpReserved"})
     public static class TTTOOLINFOW extends Structure {
-        public int cbSize = size();
+        public int cbSize;
         public int uFlags;
         public HWND hwnd;
         public Pointer uId;
@@ -191,6 +210,16 @@ public final class NativeTaskbarWidget {
         public WString lpszText;
         public LPARAM lParam = new LPARAM(0);
         public Pointer lpReserved;
+
+        static TTTOOLINFOW create(int flags, HWND hwnd, Pointer uId, String text) {
+            TTTOOLINFOW ti = new TTTOOLINFOW();
+            ti.cbSize = ti.size();
+            ti.uFlags = flags;
+            ti.hwnd = hwnd;
+            ti.uId = uId;
+            ti.lpszText = new WString(text);
+            return ti;
+        }
     }
 
     private interface Comctl32Ex extends StdCallLibrary {
@@ -257,6 +286,7 @@ public final class NativeTaskbarWidget {
 
     private final Object stateLock = new Object();
     private List<DeviceReading> currentItems = List.of();
+    private volatile I18n i18n = new I18n(AppLanguage.PT_BR);
     private volatile boolean wantEnabled;
     private volatile boolean activeAndVisible;
     private volatile boolean permanentFallbackToSwing;
@@ -278,14 +308,12 @@ public final class NativeTaskbarWidget {
     private volatile String currentTooltipText = "";
     private HANDLE handCursor;
     private boolean hovered;
-    private boolean lightTaskbar;
-    private int lastDpi = 96;
     private int lastClientX = Integer.MIN_VALUE;
     private int lastClientY = Integer.MIN_VALUE;
     private int lastPhysW = -1;
     private int lastPhysH = -1;
     private String lastPaintSignature = "";
-    private boolean loggedFirstRender;
+    private volatile boolean loggedFirstRender;
     private boolean loggedNoTaskbarOnce;
     private int consecutiveCreateFailures;
     private int consecutiveRenderFailures;
@@ -304,6 +332,10 @@ public final class NativeTaskbarWidget {
         this.onRefresh = onRefresh;
         this.onOpenSettings = onOpenSettings;
         this.onExit = onExit;
+    }
+
+    public void setI18n(I18n i18n) {
+        this.i18n = i18n != null ? i18n : new I18n(AppLanguage.PT_BR);
     }
 
     public boolean isPermanentFallbackToSwing() {
@@ -384,7 +416,10 @@ public final class NativeTaskbarWidget {
         if (tid != 0) {
             User32Ex.INSTANCE.PostThreadMessageW(tid, WM_APP_SHUTDOWN, new WPARAM(0), new LPARAM(0));
         }
-        Thread t = win32Thread;
+        Thread t;
+        synchronized (this) {
+            t = win32Thread;
+        }
         if (t != null && t.isAlive() && Thread.currentThread() != t) {
             try {
                 t.join(1500);
@@ -623,7 +658,6 @@ public final class NativeTaskbarWidget {
         this.hwndTaskbar = taskbar;
         this.attachedTaskbarPeer = tbPeer;
         this.childHwndPeer = Pointer.nativeValue(created.getPointer());
-        this.lastDpi = dpi;
         this.lastClientX = Integer.MIN_VALUE;
         this.lastClientY = Integer.MIN_VALUE;
         this.lastPhysW = -1;
@@ -646,8 +680,7 @@ public final class NativeTaskbarWidget {
 
     private void createTooltipOnThread(HINSTANCE hInst, HWND targetChild) {
         try {
-            INITCOMMONCONTROLSEX icc = new INITCOMMONCONTROLSEX();
-            icc.dwICC = ICC_WIN95_CLASSES;
+            INITCOMMONCONTROLSEX icc = INITCOMMONCONTROLSEX.create(ICC_WIN95_CLASSES);
             Comctl32Ex.INSTANCE.InitCommonControlsEx(icc);
 
             HWND tip = User32.INSTANCE.CreateWindowEx(
@@ -664,11 +697,7 @@ public final class NativeTaskbarWidget {
             if (tip != null && User32.INSTANCE.IsWindow(tip)) {
                 this.hwndTip = tip;
                 this.lastTooltipText = "";
-                TTTOOLINFOW ti = new TTTOOLINFOW();
-                ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-                ti.hwnd = targetChild;
-                ti.uId = targetChild.getPointer();
-                ti.lpszText = new WString("Wireless Battery");
+                TTTOOLINFOW ti = TTTOOLINFOW.create(TTF_IDISHWND | TTF_SUBCLASS, targetChild, targetChild.getPointer(), "Wireless Battery");
                 User32Ex.INSTANCE.SendMessageW(tip, TTM_ADDTOOLW, new WPARAM(0), ti);
                 User32Ex.INSTANCE.SendMessageW(tip, TTM_SETMAXTIPWIDTH, new WPARAM(0), new LPARAM(600));
             }
@@ -678,7 +707,7 @@ public final class NativeTaskbarWidget {
     }
 
     private void updateTooltipOnThread(List<DeviceReading> items) {
-        String nextText = buildPlainTooltip(items);
+        String nextText = buildPlainTooltip(items, this.i18n);
         this.currentTooltipText = nextText;
         if (hwndTip == null || hwndChild == null || nextText.equals(lastTooltipText)) {
             return;
@@ -688,11 +717,7 @@ public final class NativeTaskbarWidget {
                 hwndTip = null;
                 return;
             }
-            TTTOOLINFOW ti = new TTTOOLINFOW();
-            ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-            ti.hwnd = hwndChild;
-            ti.uId = hwndChild.getPointer();
-            ti.lpszText = new WString(nextText);
+            TTTOOLINFOW ti = TTTOOLINFOW.create(TTF_IDISHWND | TTF_SUBCLASS, hwndChild, hwndChild.getPointer(), nextText);
             User32Ex.INSTANCE.SendMessageW(hwndTip, TTM_UPDATETIPTEXTW, new WPARAM(0), ti);
             lastTooltipText = nextText;
         } catch (Throwable ignored) {
@@ -701,33 +726,45 @@ public final class NativeTaskbarWidget {
     }
 
     static String buildPlainTooltip(List<DeviceReading> list) {
+        return buildPlainTooltip(list, new I18n(AppLanguage.PT_BR));
+    }
+
+    static String buildPlainTooltip(List<DeviceReading> list, I18n i18n) {
+        I18n loc = i18n != null ? i18n : new I18n(AppLanguage.PT_BR);
         if (list == null || list.isEmpty()) {
-            return "Wireless Battery — nenhum dispositivo detectado";
+            return loc.t("widget.noneDetected");
         }
+        Instant now = Instant.now();
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < list.size(); i++) {
             DeviceReading r = list.get(i);
             if (i > 0) sb.append('\n');
-            if (r.isSimulated()) sb.append("[Simulação] ");
+            if (r.isSimulated()) sb.append(loc.t("widget.simPrefix"));
             sb.append(r.displayName()).append(": ");
             if (r.hasBatteryPercent()) {
                 sb.append(r.batteryPercent()).append("%");
-                if (r.charging()) sb.append(" (carregando)");
+                if (r.charging()) sb.append(' ').append(loc.t("widget.chargingTag"));
                 if (r.connectionLabel() != null && !r.connectionLabel().isBlank()
                         && !"Sem conexão".equalsIgnoreCase(r.connectionLabel())) {
                     sb.append(" [").append(r.connectionLabel()).append("]");
                 }
+                if (r.validReadingInstant() != null) {
+                    sb.append(" · ").append(ReadingAgeFormatter.formatRelativeAge(r.validReadingInstant(), now, loc, false));
+                }
             } else if (r.hasLastKnownPercent()) {
-                sb.append(r.lastKnownPercent()).append("% (última leitura)");
+                sb.append(r.lastKnownPercent()).append("% (").append(loc.t("card.cachedBadge")).append(")");
                 if (r.connectionLabel() != null && !r.connectionLabel().isBlank()
                         && !"Sem conexão".equalsIgnoreCase(r.connectionLabel())) {
                     sb.append(" [").append(r.connectionLabel()).append("]");
+                }
+                if (r.lastKnownInstant() != null) {
+                    sb.append(" · ").append(ReadingAgeFormatter.formatRelativeAge(r.lastKnownInstant(), now, loc, true));
                 }
             } else if (r.status() == br.com.wirelessbattery.model.ConnectionStatus.BATTERY_UNAVAILABLE
                     && "Bluetooth".equalsIgnoreCase(r.connectionLabel())) {
-                sb.append("Conectado · Bluetooth (leitura indisponível)");
+                sb.append(loc.t("card.btUnavailable", r.connectionLabel()));
             } else {
-                sb.append(r.status().getLabel());
+                sb.append(r.status().getLocalizedLabel(loc));
             }
         }
         return sb.toString();
@@ -800,8 +837,6 @@ public final class NativeTaskbarWidget {
         String sig = buildPaintSignature(itemsSnapshot, currentLight, hovered, dpi, physW, physH);
         updateTooltipOnThread(itemsSnapshot);
         if (!sig.equals(lastPaintSignature)) {
-            this.lightTaskbar = currentLight;
-            this.lastDpi = dpi;
             if (!paintLayeredBufferOnThread(itemsSnapshot, currentLight, hovered, scale, logicalW, logicalH, physW, physH)) {
                 return;
             }
@@ -1202,9 +1237,7 @@ public final class NativeTaskbarWidget {
             case WM_MOUSEMOVE:
                 if (!hovered) {
                     hovered = true;
-                    TRACKMOUSEEVENT tme = new TRACKMOUSEEVENT();
-                    tme.dwFlags = TME_LEAVE;
-                    tme.hwndTrack = hWnd;
+                    TRACKMOUSEEVENT tme = TRACKMOUSEEVENT.create(TME_LEAVE, hWnd);
                     User32Ex.INSTANCE.TrackMouseEvent(tme);
                     syncNativeStateOnThread();
                 }

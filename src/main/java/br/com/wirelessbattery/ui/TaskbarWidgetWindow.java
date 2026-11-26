@@ -2,8 +2,11 @@ package br.com.wirelessbattery.ui;
 
 import br.com.wirelessbattery.config.AppSettings;
 import br.com.wirelessbattery.diagnostics.AppLogger;
+import br.com.wirelessbattery.i18n.I18n;
 import br.com.wirelessbattery.model.DeviceReading;
 import br.com.wirelessbattery.model.DeviceType;
+import br.com.wirelessbattery.model.ReadingAgeFormatter;
+import java.time.Instant;
 import java.awt.Color;
 import java.awt.Cursor;
 import java.awt.Dimension;
@@ -50,19 +53,20 @@ public final class TaskbarWidgetWindow extends JWindow {
     private final Runnable onExit;
 
     private final NativeTaskbarWidget nativeWidget;
+    private volatile I18n i18n = new I18n();
     private final boolean preferNativeBackend;
     private boolean loggedFallbackToSwing;
 
     private final WidgetCanvas canvas = new WidgetCanvas();
     private final Timer positionTimer;
     private List<DeviceReading> items = List.of();
-    private boolean enabled;
-    private boolean hovered;
-    private boolean lightTaskbar;
+    private volatile boolean enabled;
+    private volatile boolean hovered;
+    private volatile boolean lightTaskbar;
 
     private String lastRenderSignature = "";
     private Rectangle lastBounds;
-    private long lastTaskbarPeer;
+    private volatile long lastTaskbarPeer;
     private Runnable onAvailabilityChanged;
     private AutoCloseable shellFocusHook;
     private volatile boolean zOrderCheckPending;
@@ -148,6 +152,14 @@ public final class TaskbarWidgetWindow extends JWindow {
 
     public void setOnAvailabilityChanged(Runnable onAvailabilityChanged) {
         this.onAvailabilityChanged = onAvailabilityChanged;
+    }
+
+    public void setI18n(I18n i18n) {
+        this.i18n = i18n != null ? i18n : new I18n();
+        if (nativeWidget != null) {
+            nativeWidget.setI18n(this.i18n);
+        }
+        canvas.setToolTipText(buildTooltip(this.items));
     }
 
     private boolean isUsingNativeBackend() {
@@ -490,27 +502,35 @@ public final class TaskbarWidgetWindow extends JWindow {
     }
 
     private String buildTooltip(List<DeviceReading> list) {
+        I18n loc = this.i18n;
         if (list.isEmpty()) {
-            return "Wireless Battery — nenhum dispositivo detectado";
+            return loc.t("widget.noneDetected");
         }
+        Instant now = Instant.now();
         StringBuilder sb = new StringBuilder("<html>");
         for (int i = 0; i < list.size(); i++) {
             DeviceReading r = list.get(i);
             if (i > 0) sb.append("<br>");
-            if (r.isSimulated()) sb.append("<b>[Simulação]</b> ");
+            if (r.isSimulated()) sb.append("<b>").append(loc.t("widget.simPrefix").trim()).append("</b> ");
             sb.append(r.displayName()).append(": ");
             if (r.hasBatteryPercent()) {
                 sb.append(r.batteryPercent()).append("%");
-                if (r.charging()) sb.append(" (carregando)");
+                if (r.charging()) sb.append(' ').append(loc.t("widget.chargingTag"));
                 appendConnectionIfRelevant(sb, r);
+                if (r.validReadingInstant() != null) {
+                    sb.append(" · ").append(ReadingAgeFormatter.formatRelativeAge(r.validReadingInstant(), now, loc, false));
+                }
             } else if (r.hasLastKnownPercent()) {
-                sb.append(r.lastKnownPercent()).append("% (última leitura)");
+                sb.append(r.lastKnownPercent()).append("% (").append(loc.t("card.cachedBadge")).append(")");
                 appendConnectionIfRelevant(sb, r);
+                if (r.lastKnownInstant() != null) {
+                    sb.append(" · ").append(ReadingAgeFormatter.formatRelativeAge(r.lastKnownInstant(), now, loc, true));
+                }
             } else if (r.status() == br.com.wirelessbattery.model.ConnectionStatus.BATTERY_UNAVAILABLE
                     && "Bluetooth".equalsIgnoreCase(r.connectionLabel())) {
-                sb.append("Conectado · Bluetooth (leitura indisponível)");
+                sb.append(loc.t("card.btUnavailable", r.connectionLabel()));
             } else {
-                sb.append(r.status().getLabel());
+                sb.append(r.status().getLocalizedLabel(loc));
             }
         }
         sb.append("</html>");

@@ -52,6 +52,13 @@ public interface BatteryDevice {
     }
 
     /**
+     * Capacidades, transporte e perfil de segurança do protocolo deste driver.
+     */
+    default DriverCapabilities getCapabilities() {
+        return DriverCapabilities.defaultPassive();
+    }
+
+    /**
      * Interface USB/HID esperada pelo protocolo, ou -1 se não aplicável.
      */
     default int getExpectedInterface() {

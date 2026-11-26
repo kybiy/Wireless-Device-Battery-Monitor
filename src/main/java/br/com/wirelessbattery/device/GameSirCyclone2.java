@@ -6,6 +6,7 @@ import br.com.wirelessbattery.model.DeviceReading;
 import br.com.wirelessbattery.model.DeviceType;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import org.hid4java.HidDevice;
 
@@ -22,6 +23,22 @@ public final class GameSirCyclone2 implements BatteryDevice {
     public static final String DEVICE_ID = "gamesir-cyclone-2";
     public static final String DISPLAY_NAME = "GameSir Cyclone 2";
     public static final String CONNECTION = "2.4 GHz / USB";
+
+    private static final DriverCapabilities CAPABILITIES = new DriverCapabilities(
+            TransportType.USB_HID,
+            true,
+            true,
+            10,
+            new ProtocolSafetyInfo(
+                    QueryMechanism.HID_OUTPUT_REPORT_EXPERIMENTAL,
+                    false,
+                    true,
+                    false,
+                    true,
+                    "Protocolo experimental via Output Report HID 0x0F 0x03 na coleção FFF0:0040 em modo XInput: GET_FEATURE retorna EPIPE e leituras passivas não emitem dados em repouso (conforme vdemonchy/cyclone2-linux). Nunca envia seletor do subsistema de LED 0x20 (bytes [2..63] permanecem sempre 0).",
+                    "https://github.com/vdemonchy/cyclone2-linux"
+            )
+    );
 
     private static final int SINGLE_READ_TIMEOUT_MS = 200;
 
@@ -72,6 +89,11 @@ public final class GameSirCyclone2 implements BatteryDevice {
     @Override
     public boolean supportsBatteryQuery() {
         return true;
+    }
+
+    @Override
+    public DriverCapabilities getCapabilities() {
+        return CAPABILITIES;
     }
 
     @Override
@@ -285,7 +307,7 @@ public final class GameSirCyclone2 implements BatteryDevice {
                         QueryOutcomeType.OPEN_FAILED,
                         null,
                         pid,
-                        "Falha ao abrir coleção HID FFF0:0040 (IF " + iface + "): " + err
+                        buildOpenFailedDetail(iface, err)
                 );
             }
 
@@ -396,6 +418,24 @@ public final class GameSirCyclone2 implements BatteryDevice {
                 device.close();
             }
         }
+    }
+
+    private static String buildOpenFailedDetail(int iface, String err) {
+        String lower = err == null ? "" : err.toLowerCase(Locale.ROOT);
+        boolean busyOrDenied = lower.contains("sharing")
+                || lower.contains("another process")
+                || lower.contains("outro processo")
+                || lower.contains("access is denied")
+                || lower.contains("access denied")
+                || lower.contains("acesso negado")
+                || lower.contains("busy")
+                || lower.contains("ocupad")
+                || lower.contains("in use");
+        if (busyOrDenied) {
+            return "Interface HID FFF0:0040 (IF " + iface + ") ocupada ou com acesso negado (" + err
+                    + "). Outro software de periférico simultâneo (ex.: GameSir Connect) pode estar segurando a interface HID.";
+        }
+        return "Falha ao abrir coleção HID FFF0:0040 (IF " + iface + "): " + err;
     }
 
     private static String formatHexSlice(byte[] buf, int offset, int count) {

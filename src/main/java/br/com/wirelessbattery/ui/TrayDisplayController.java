@@ -6,8 +6,11 @@ import br.com.wirelessbattery.config.WindowsStartupManager;
 import br.com.wirelessbattery.device.BatteryDevice;
 import br.com.wirelessbattery.device.DeviceManager;
 import br.com.wirelessbattery.diagnostics.AppLogger;
+import br.com.wirelessbattery.i18n.I18n;
 import br.com.wirelessbattery.model.DeviceReading;
 import br.com.wirelessbattery.model.DeviceType;
+import br.com.wirelessbattery.model.ReadingAgeFormatter;
+import br.com.wirelessbattery.notification.BatteryAlertManager;
 import java.awt.AWTException;
 import java.awt.CheckboxMenuItem;
 import java.awt.MenuItem;
@@ -15,6 +18,7 @@ import java.awt.PopupMenu;
 import java.awt.SystemTray;
 import java.awt.TrayIcon;
 import java.awt.event.ItemEvent;
+import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -45,7 +49,8 @@ public final class TrayDisplayController {
     private final Map<String, TrayIcon> deviceIcons = new LinkedHashMap<>();
     private final Map<String, String> iconSignatures = new HashMap<>();
     private final Map<String, String> menuSignatures = new HashMap<>();
-    private final Set<String> lowBatteryNotified = new HashSet<>();
+    private final BatteryAlertManager alertManager;
+    private I18n i18n;
     private boolean active;
 
     public TrayDisplayController(
@@ -59,15 +64,39 @@ public final class TrayDisplayController {
             Runnable onSettingsMutated,
             Runnable onExit
     ) {
+        this(settings, deviceManager, logger, new BatteryAlertManager(), new I18n(),
+                onOpenWindow, onRefresh, onOpenSettings, onToggleTheme, onSettingsMutated, onExit);
+    }
+
+    public TrayDisplayController(
+            AppSettings settings,
+            DeviceManager deviceManager,
+            AppLogger logger,
+            BatteryAlertManager alertManager,
+            I18n i18n,
+            Runnable onOpenWindow,
+            Runnable onRefresh,
+            Runnable onOpenSettings,
+            Runnable onToggleTheme,
+            Runnable onSettingsMutated,
+            Runnable onExit
+    ) {
         this.settings = settings;
         this.deviceManager = deviceManager;
         this.logger = logger;
+        this.alertManager = alertManager != null ? alertManager : new BatteryAlertManager();
+        this.i18n = i18n != null ? i18n : new I18n();
         this.onOpenWindow = onOpenWindow;
         this.onRefresh = onRefresh;
         this.onOpenSettings = onOpenSettings;
         this.onToggleTheme = onToggleTheme;
         this.onSettingsMutated = onSettingsMutated;
         this.onExit = onExit;
+    }
+
+    public void setI18n(I18n i18n) {
+        this.i18n = i18n != null ? i18n : new I18n();
+        menuSignatures.clear();
     }
 
     public boolean isSupported() {
@@ -214,20 +243,82 @@ public final class TrayDisplayController {
     }
 
     private void checkLowBatteryNotification(TrayIcon icon, DeviceReading r) {
-        if (icon == null || r.isSimulated() || !settings.isNotificationsEnabled()) {
+        if (icon == null) {
             return;
         }
-        if (r.hasBatteryPercent() && !r.charging() && r.batteryPercent() <= settings.getLowBatteryThreshold()) {
-            if (lowBatteryNotified.add(r.deviceId())) {
-                icon.displayMessage(
-                        "Bateria baixa — " + r.displayName(),
-                        "Nível atual: " + r.batteryPercent() + "%. Conecte o cabo para recarregar.",
-                        TrayIcon.MessageType.WARNING
-                );
-            }
-        } else if (r.hasBatteryPercent() && (r.charging() || r.batteryPercent() > settings.getLowBatteryThreshold() + 8)) {
-            lowBatteryNotified.remove(r.deviceId());
+        alertManager.evaluate(List.of(r), settings, i18n, (deviceId, title, message, critical) -> {
+            icon.displayMessage(
+                    title,
+                    message,
+                    critical ? TrayIcon.MessageType.ERROR : TrayIcon.MessageType.WARNING
+            );
+            logger.info("[ALERTA] " + title + " — " + message);
+        });
+    }
+
+    /**
+     * Avalia alertas de bateria baixa mesmo quando o modo principal é somente o widget da barra
+     * de tarefas (reutiliza ícone da bandeja se ativo ou cria um ícone temporário de balão).
+     */
+    public void evaluateAlertsStandalone(List<DeviceReading> readings) {
+        if (readings == null || readings.isEmpty() || !isSupported()) {
+            return;
         }
+        alertManager.evaluate(readings, settings, i18n, (deviceId, title, message, critical) ->
+                deliverNotification(deviceId, title, message, critical));
+    }
+
+    public void deliverNotification(String deviceId, String title, String message, boolean critical) {
+        if (!isSupported()) {
+            logger.info("[ALERTA] " + title + " — " + message);
+            return;
+        }
+        TrayIcon targetIcon = findExistingTrayIconFor(deviceId);
+        if (targetIcon != null) {
+            targetIcon.displayMessage(
+                    title,
+                    message,
+                    critical ? TrayIcon.MessageType.ERROR : TrayIcon.MessageType.WARNING
+            );
+            logger.info("[ALERTA] " + title + " — " + message);
+            return;
+        }
+        try {
+            var img = TrayIconFactory.createMultiResTrayIcon(DeviceType.OTHER, null, false, false, false, settings);
+            TrayIcon temp = new TrayIcon(img, title);
+            temp.setImageAutoSize(true);
+            SystemTray.getSystemTray().add(temp);
+            temp.displayMessage(
+                    title,
+                    message,
+                    critical ? TrayIcon.MessageType.ERROR : TrayIcon.MessageType.WARNING
+            );
+            logger.info("[ALERTA] " + title + " — " + message);
+            javax.swing.Timer cleanup = new javax.swing.Timer(8000, e -> {
+                try {
+                    if (SystemTray.isSupported()) {
+                        SystemTray.getSystemTray().remove(temp);
+                    }
+                } catch (Exception ignored) {
+                    // Best-effort cleanup
+                }
+            });
+            cleanup.setRepeats(false);
+            cleanup.start();
+        } catch (Exception e) {
+            logger.warn("[ALERTA] Não foi possível exibir balão na bandeja: " + e.getMessage());
+        }
+    }
+
+    private TrayIcon findExistingTrayIconFor(String deviceId) {
+        if (deviceIcons.isEmpty()) {
+            return null;
+        }
+        TrayIcon exact = deviceIcons.get(deviceId);
+        if (exact != null) {
+            return exact;
+        }
+        return deviceIcons.values().iterator().next();
     }
 
     private TrayIcon createTrayIcon(java.awt.Image img, String tooltip) {
@@ -302,20 +393,20 @@ public final class TrayDisplayController {
         menu.add(modeBoth);
         menu.addSeparator();
 
-        MenuItem open = new MenuItem("Abrir aplicativo");
+        MenuItem open = new MenuItem(i18n.t("tray.openWindow"));
         open.addActionListener(e -> SwingUtilities.invokeLater(onOpenWindow));
 
-        MenuItem refresh = new MenuItem("Atualizar agora");
+        MenuItem refresh = new MenuItem(i18n.t("tray.refreshNow"));
         refresh.addActionListener(e -> onRefresh.run());
 
-        MenuItem cfg = new MenuItem("Abrir configurações...");
+        MenuItem cfg = new MenuItem(i18n.t("tray.settings"));
         cfg.addActionListener(e -> SwingUtilities.invokeLater(onOpenSettings));
 
-        MenuItem theme = new MenuItem("Alternar tema (Claro/Escuro)");
+        MenuItem theme = new MenuItem(i18n.t("tray.toggleTheme"));
         theme.addActionListener(e -> SwingUtilities.invokeLater(onToggleTheme));
 
         CheckboxMenuItem autostart = new CheckboxMenuItem(
-                "Iniciar com o Windows", settings.isStartWithWindows()
+                i18n.t("settings.general.startWithWindows"), settings.isStartWithWindows()
         );
         autostart.addItemListener(e -> SwingUtilities.invokeLater(() -> {
             boolean enable = e.getStateChange() == ItemEvent.SELECTED;
@@ -324,7 +415,7 @@ public final class TrayDisplayController {
             onSettingsMutated.run();
         }));
 
-        MenuItem exit = new MenuItem("Sair");
+        MenuItem exit = new MenuItem(i18n.t("tray.exit"));
         exit.addActionListener(e -> SwingUtilities.invokeLater(onExit));
 
         menu.add(open);
@@ -341,20 +432,24 @@ public final class TrayDisplayController {
     private String buildTooltip(DeviceReading r) {
         StringBuilder sb = new StringBuilder();
         if (r.isSimulated()) {
-            sb.append("[Simulação] ");
+            sb.append(i18n.t("widget.simPrefix"));
         }
         sb.append(r.displayName()).append(" — ");
+        Instant now = Instant.now();
         if (r.hasBatteryPercent()) {
             sb.append(r.batteryPercent()).append("%");
             if (r.charging()) {
-                sb.append(" (carregando)");
+                sb.append(' ').append(i18n.t("widget.chargingTag"));
+            }
+            if (r.validReadingInstant() != null) {
+                sb.append(" · ").append(ReadingAgeFormatter.formatRelativeAge(r.validReadingInstant(), now, i18n, false));
             }
         } else {
-            sb.append(r.status().getLabel());
+            sb.append(r.status().getLocalizedLabel(i18n));
             if (r.hasLastKnownPercent()) {
-                sb.append(" · Última: ").append(r.lastKnownPercent()).append("%");
-                if (r.lastKnownAt() != null) {
-                    sb.append(" (").append(r.lastKnownAt().format(TIME_FMT)).append(")");
+                sb.append(" · ").append(i18n.t("card.cachedBadge")).append(": ").append(r.lastKnownPercent()).append("%");
+                if (r.lastKnownInstant() != null) {
+                    sb.append(" (").append(ReadingAgeFormatter.formatRelativeAge(r.lastKnownInstant(), now, i18n, true)).append(")");
                 }
             }
         }

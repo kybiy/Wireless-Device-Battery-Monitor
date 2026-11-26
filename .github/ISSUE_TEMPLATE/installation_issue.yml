@@ -1,0 +1,59 @@
+name: Installation or Upgrade Issue
+description: Report problems with the .exe installer, in-place upgrades, SmartScreen, or portable ZIP
+title: "[Install]: "
+labels: ["bug", "installer"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Privacy Warning:** Redact your Windows username (`C:\Users\<USER>`) or any personal file paths before posting installer logs.
+  - type: input
+    id: app_version
+    attributes:
+      label: Installer / Target Version & Previous Installed Version
+      placeholder: e.g. Upgrading v1.1.1 -> v1.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: package_type
+    attributes:
+      label: Distribution Package
+      options:
+        - Windows Installer (.exe)
+        - Portable Archive (.zip)
+    validations:
+      required: true
+  - type: dropdown
+    id: windows_version
+    attributes:
+      label: Windows Version (x64)
+      options:
+        - Windows 11 x64
+        - Windows 10 x64 (Experimental)
+    validations:
+      required: true
+  - type: input
+    id: device_context
+    attributes:
+      label: Peripheral Model & Connection (if relevant)
+      placeholder: e.g. N/A or Delux M800 Pro (2.4 GHz)
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed_behavior
+    attributes:
+      label: Observed Behavior & Error Messages
+      description: Include whether SHA-256 verification passed against SHA256SUMS.txt.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy_confirm
+    attributes:
+      label: Privacy Check
+      options:
+        - label: I verified that no personal usernames, emails, MACs, or serial numbers are included.
+          required: true

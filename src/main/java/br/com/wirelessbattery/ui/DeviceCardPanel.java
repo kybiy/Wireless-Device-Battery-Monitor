@@ -1,8 +1,10 @@
 package br.com.wirelessbattery.ui;
 
 import br.com.wirelessbattery.config.AppSettings;
+import br.com.wirelessbattery.i18n.I18n;
 import br.com.wirelessbattery.model.ConnectionStatus;
 import br.com.wirelessbattery.model.DeviceReading;
+import br.com.wirelessbattery.model.ReadingAgeFormatter;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -13,6 +15,7 @@ import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
+import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -35,6 +38,7 @@ public final class DeviceCardPanel extends JPanel {
 
     private final ThemeManager themeManager;
     private final AppSettings settings;
+    private final I18n i18n;
 
     private final IconBadge iconBadge = new IconBadge();
     private final JLabel nameLabel = new JLabel();
@@ -50,8 +54,13 @@ public final class DeviceCardPanel extends JPanel {
     private final Timer progressAnimator;
 
     public DeviceCardPanel(ThemeManager themeManager, AppSettings settings, DeviceReading initialReading) {
+        this(themeManager, settings, initialReading, new I18n(settings != null ? settings.getLanguage() : null));
+    }
+
+    public DeviceCardPanel(ThemeManager themeManager, AppSettings settings, DeviceReading initialReading, I18n i18n) {
         this.themeManager = themeManager;
         this.settings = settings;
+        this.i18n = i18n != null ? i18n : new I18n();
 
         setOpaque(false);
         setLayout(new BorderLayout(0, 12));
@@ -137,44 +146,61 @@ public final class DeviceCardPanel extends JPanel {
     private String buildSubtitle(DeviceReading r) {
         String via = r.connectionLabel();
         ConnectionStatus st = r.status();
-        String base = switch (st) {
-            case CONNECTED -> "Conectado · " + via;
-            case CHARGING -> "Carregando · " + via;
-            case ASLEEP -> r.hasLastKnownPercent()
-                    ? "Em repouso · Última leitura"
-                    : "Em repouso · " + via;
-            case NO_RESPONSE -> "Receptor conectado, sem resposta · " + via;
-            case OPEN_FAILED -> "Falha ao abrir interface HID · " + via;
-            case READ_FAILED -> "Falha de leitura · " + via;
-            case TIMEOUT -> "Timeout de leitura · " + via;
-            case PENDING_PROTOCOL -> "Leitura indisponível";
+        String statusText = st.getLocalizedLabel(i18n);
+        Instant now = Instant.now();
+        return switch (st) {
+            case CONNECTED, CHARGING -> statusText + " · " + via;
+            case ASLEEP -> {
+                if (r.hasLastKnownPercent() && r.lastKnownInstant() != null) {
+                    yield statusText + " · " + ReadingAgeFormatter.formatRelativeAge(r.lastKnownInstant(), now, i18n, true);
+                }
+                yield statusText + " · " + via;
+            }
+            case NO_RESPONSE, OPEN_FAILED, READ_FAILED, TIMEOUT, ERROR -> {
+                if (r.hasLastKnownPercent() && r.lastKnownInstant() != null) {
+                    yield statusText + " · " + ReadingAgeFormatter.formatRelativeAge(r.lastKnownInstant(), now, i18n, true);
+                }
+                yield statusText + " · " + via;
+            }
+            case PENDING_PROTOCOL -> statusText;
             case BATTERY_UNAVAILABLE -> "Bluetooth".equalsIgnoreCase(via)
-                    ? "Conectado · Bluetooth (leitura indisponível)"
-                    : "Leitura indisponível";
-            case ERROR -> "Erro de leitura · " + via;
+                    ? i18n.t("card.btUnavailable", via)
+                    : statusText;
+            case READ_ONLY_BLOCKED -> i18n.t("card.readOnlyBlocked", via);
+            case MONITORING_DISABLED -> i18n.t("card.monitoringDisabled", via);
             case DISCONNECTED -> {
                 if (r.hasLastKnownPercent()) {
-                    yield "Desconectado · Última às " + (r.lastKnownAt() != null ? r.lastKnownAt().format(TIME_FMT) : "--:--");
+                    if (r.lastKnownInstant() != null) {
+                        yield statusText + " · " + ReadingAgeFormatter.formatRelativeAge(r.lastKnownInstant(), now, i18n, true);
+                    }
+                    String at = r.lastKnownAt() != null ? r.lastKnownAt().format(TIME_FMT) : "--:--";
+                    yield statusText + " · " + i18n.t("card.lastKnownAt", at);
                 }
                 if ("Sem conexão".equalsIgnoreCase(via) || r.deviceId().contains("-slot-")) {
-                    yield "Desconectado";
+                    yield statusText;
                 }
-                yield "Desconectado · " + via;
+                yield statusText + " · " + via;
             }
         };
-        return base;
     }
 
     private String buildTooltip(DeviceReading r) {
         StringBuilder sb = new StringBuilder();
         if (r.isSimulated()) {
-            sb.append("[Simulação] ");
+            sb.append('[').append(i18n.t("card.simBadge")).append("] ");
         }
-        sb.append(r.displayName()).append(" — ").append(r.status().getLabel());
+        sb.append(r.displayName()).append(" — ").append(r.status().getLocalizedLabel(i18n));
         if (r.hasBatteryPercent()) {
             sb.append(" (").append(r.batteryPercent()).append("%)");
+            if (r.validReadingInstant() != null) {
+                sb.append(" · ").append(ReadingAgeFormatter.formatRelativeAge(r.validReadingInstant(), Instant.now(), i18n, false));
+            }
         } else if (r.hasLastKnownPercent()) {
-            sb.append(" (última conhecida: ").append(r.lastKnownPercent()).append("%)");
+            sb.append(" (").append(i18n.t("card.cachedBadge")).append(": ").append(r.lastKnownPercent()).append("%");
+            if (r.lastKnownInstant() != null) {
+                sb.append(", ").append(ReadingAgeFormatter.formatRelativeAge(r.lastKnownInstant(), Instant.now(), i18n, true));
+            }
+            sb.append(')');
         }
         if (!r.detailMessage().isBlank()) {
             sb.append(" · ").append(r.detailMessage());

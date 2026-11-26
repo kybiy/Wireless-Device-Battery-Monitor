@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Scanner Bluetooth passivo e somente-leitura para Windows 10/11 via APIs nativas Win32 (JNA).
@@ -187,7 +188,7 @@ public final class WindowsBluetoothScanner implements BluetoothDeviceScanner {
                     );
                 }
 
-                Boolean connectedProp = readBooleanProperty(
+                Optional<Boolean> connectedProp = readBooleanProperty(
                         setupApiExt, hDevInfo, devInfoData, DEVPKEY_BLUETOOTH_IS_CONNECTED, propBuffer
                 );
 
@@ -209,7 +210,7 @@ public final class WindowsBluetoothScanner implements BluetoothDeviceScanner {
                         isPrimaryDevNode(upperId),
                         isBluetoothLeNode(upperId),
                         friendlyName,
-                        connectedProp,
+                        connectedProp.orElse(null),
                         hasProblem,
                         bluetoothBattery,
                         batteryLife
@@ -587,7 +588,7 @@ public final class WindowsBluetoothScanner implements BluetoothDeviceScanner {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    private static Boolean readBooleanProperty(
+    private static Optional<Boolean> readBooleanProperty(
             SetupApiExt setupApiExt,
             WinNT.HANDLE hDevInfo,
             SetupApi.SP_DEVINFO_DATA devInfoData,
@@ -596,9 +597,9 @@ public final class WindowsBluetoothScanner implements BluetoothDeviceScanner {
     ) {
         PropertyData data = readRawProperty(setupApiExt, hDevInfo, devInfoData, key, reusableBuffer);
         if (data == null || data.type() != DEVPROP_TYPE_BOOLEAN || data.length() < 1) {
-            return null;
+            return Optional.empty();
         }
-        return (data.buffer().getByte(0) & 0xFF) != 0;
+        return Optional.of((data.buffer().getByte(0) & 0xFF) != 0);
     }
 
     private static Integer readBatteryByteProperty(
@@ -676,10 +677,6 @@ public final class WindowsBluetoothScanner implements BluetoothDeviceScanner {
     @Structure.FieldOrder({"dwSize"})
     public static class BLUETOOTH_FIND_RADIO_PARAMS extends Structure {
         public int dwSize = 4;
-
-        public BLUETOOTH_FIND_RADIO_PARAMS() {
-            this.dwSize = size();
-        }
     }
 
     private interface SetupApiExt extends StdCallLibrary {

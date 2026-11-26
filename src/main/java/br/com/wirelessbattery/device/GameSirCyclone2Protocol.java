@@ -80,7 +80,7 @@ public final class GameSirCyclone2Protocol {
     /**
      * Interpreta um Input Report recebido da coleção {@code FFF0:0040}.
      *
-     * @return {@link ParsedBattery} se for um relatório {@code 0x12} ativo válido com percentual 1..100;
+     * @return {@link ParsedBattery} se for um relatório {@code 0x12} ativo válido com percentual {@code 0..100};
      *         {@code null} para relatórios de evento ({@code 0x10}), frames ociosos do dongle
      *         ({@code bytes[1..36] == 0}), curtos ou fora da faixa.
      */
@@ -100,7 +100,7 @@ public final class GameSirCyclone2Protocol {
             return null;
         }
         int rawBattery = data[BATTERY_INDEX] & 0xFF;
-        if (rawBattery <= 0 || rawBattery > 100) {
+        if (rawBattery < 0 || rawBattery > 100) {
             return null;
         }
         boolean charging = (data[CHARGING_INDEX] & 0xFF) == 1;

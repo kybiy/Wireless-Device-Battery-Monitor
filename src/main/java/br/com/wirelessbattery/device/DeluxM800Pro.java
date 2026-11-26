@@ -24,6 +24,22 @@ public final class DeluxM800Pro implements BatteryDevice {
     public static final String DISPLAY_NAME = "Delux M800 Pro";
     public static final String CONNECTION = "2.4 GHz";
 
+    private static final DriverCapabilities CAPABILITIES = new DriverCapabilities(
+            TransportType.USB_HID,
+            true,
+            false,
+            10,
+            new ProtocolSafetyInfo(
+                    QueryMechanism.HID_FEATURE_REPORT_QUERY,
+                    false,
+                    false,
+                    true,
+                    false,
+                    "Consulta somente-bateria via HID Feature Report 0x0C (sendFeatureReport + getFeatureReport), sem comandos de configuração.",
+                    "https://github.com/xb-bx/m800-pro-driver"
+            )
+    );
+
     private final HidServiceProvider hidProvider;
     private final DeluxM800ProConfig config;
     private final AppLogger logger;
@@ -62,6 +78,11 @@ public final class DeluxM800Pro implements BatteryDevice {
     @Override
     public DataSourceType getSourceType() {
         return DataSourceType.REAL;
+    }
+
+    @Override
+    public DriverCapabilities getCapabilities() {
+        return CAPABILITIES;
     }
 
     @Override

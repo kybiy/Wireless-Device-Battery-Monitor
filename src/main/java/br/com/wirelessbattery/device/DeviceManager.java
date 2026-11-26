@@ -1,9 +1,11 @@
 package br.com.wirelessbattery.device;
 
+import br.com.wirelessbattery.config.AppSettings;
 import br.com.wirelessbattery.diagnostics.AppLogger;
 import br.com.wirelessbattery.model.ConnectionStatus;
 import br.com.wirelessbattery.model.DataSourceType;
 import br.com.wirelessbattery.model.DeviceReading;
+import java.time.Instant;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -15,12 +17,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.hid4java.HidDevice;
 import org.hid4java.HidServices;
@@ -39,8 +50,17 @@ import org.hid4java.event.HidServicesEvent;
  * - Preserva a última leitura conhecida durante repouso ou desconexão, diferenciando-a de leituras atuais.
  */
 public final class DeviceManager implements AutoCloseable {
-    private record LastKnown(int percent, LocalTime timestamp, long epochMillis) {}
+    private record LastKnown(int percent, LocalTime timestamp, Instant validInstant, long epochMillis) {}
 
+    private static final class OpenFailureBackoff {
+        int consecutiveFailures;
+        boolean skipNextCycle;
+        boolean backoffLogged;
+    }
+
+    public static final long DEFAULT_PER_DEVICE_TIMEOUT_MS = 3_500L;
+    private static final int OPEN_FAILED_BACKOFF_THRESHOLD = 3;
+    private static final int QUERY_QUEUE_CAPACITY = 16;
     private static final long ASLEEP_GRACE_MILLIS = 30L * 60L * 1000L; // 30 minutos
     private static final long SUSPEND_JUMP_THRESHOLD_MILLIS = 15_000L;
     private static final long USB_EVENT_DEBOUNCE_MILLIS = 1_800L;
@@ -49,6 +69,8 @@ public final class DeviceManager implements AutoCloseable {
     private final List<BatteryDevice> directDevices = new ArrayList<>();
     private final Map<String, DeviceReading> readings = new LinkedHashMap<>();
     private final Map<String, LastKnown> lastKnownMap = new HashMap<>();
+    private final Map<String, OpenFailureBackoff> openFailureBackoffs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> inFlightDevices = new ConcurrentHashMap<>();
     private final Set<String> seenDriverIds = new LinkedHashSet<>();
     private final Set<String> detectedDeviceIds = new LinkedHashSet<>();
     private final CopyOnWriteArrayList<Consumer<List<DeviceReading>>> listeners = new CopyOnWriteArrayList<>();
@@ -56,30 +78,87 @@ public final class DeviceManager implements AutoCloseable {
     private final HidServiceProvider hidProvider;
     private final AppLogger logger;
     private final ScheduledExecutorService scheduler;
+    private final ExecutorService queryExecutor;
     private final AtomicBoolean polling = new AtomicBoolean(false);
+    private final AtomicLong cycleGeneration = new AtomicLong(0L);
 
+    private volatile AppSettings settings;
+    private volatile Runnable prePollHook;
+    private volatile long perDeviceTimeoutMs;
     private ScheduledFuture<?> periodicTask;
     private ScheduledFuture<?> debounceTask;
     private ScheduledFuture<?> suspendWatchTask;
     private HidServicesListener hidListener;
+    private volatile long baseIntervalSeconds = 20;
     private volatile long currentIntervalSeconds = 20;
+    private volatile boolean ecoModeWindowHidden = false;
     private volatile long lastWatchdogWallMillis = System.currentTimeMillis();
     private volatile LocalTime lastPollTime;
     private volatile boolean closed;
     private String lastCycleSummarySignature;
 
     public DeviceManager(AppLogger logger) {
-        this(null, logger);
+        this(null, null, logger, DEFAULT_PER_DEVICE_TIMEOUT_MS);
     }
 
     public DeviceManager(HidServiceProvider hidProvider, AppLogger logger) {
+        this(hidProvider, null, logger, DEFAULT_PER_DEVICE_TIMEOUT_MS);
+    }
+
+    public DeviceManager(HidServiceProvider hidProvider, AppSettings settings, AppLogger logger) {
+        this(hidProvider, settings, logger, DEFAULT_PER_DEVICE_TIMEOUT_MS);
+    }
+
+    public DeviceManager(
+            HidServiceProvider hidProvider,
+            AppSettings settings,
+            AppLogger logger,
+            long perDeviceTimeoutMs
+    ) {
         this.hidProvider = hidProvider;
+        this.settings = settings;
         this.logger = Objects.requireNonNull(logger, "logger não pode ser nulo");
+        this.perDeviceTimeoutMs = Math.max(50L, perDeviceTimeoutMs);
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "wireless-battery-poller");
             t.setDaemon(true);
             return t;
         });
+        this.queryExecutor = new ThreadPoolExecutor(
+                1,
+                1,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(QUERY_QUEUE_CAPACITY),
+                r -> {
+                    Thread t = new Thread(r, "wireless-battery-device-query");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+    }
+
+    public synchronized void setSettings(AppSettings settings) {
+        this.settings = settings;
+        if (!closed && periodicTask != null && !periodicTask.isCancelled()) {
+            long effective = computeEffectiveIntervalSeconds(this.baseIntervalSeconds);
+            if (effective != this.currentIntervalSeconds) {
+                reschedulePeriodicTask(effective, ecoModeWindowHidden ? effective : 0L);
+            }
+        }
+    }
+
+    public void setPrePollHook(Runnable prePollHook) {
+        this.prePollHook = prePollHook;
+    }
+
+    public void setPerDeviceTimeoutMs(long perDeviceTimeoutMs) {
+        this.perDeviceTimeoutMs = Math.max(50L, perDeviceTimeoutMs);
+    }
+
+    public long getPerDeviceTimeoutMs() {
+        return perDeviceTimeoutMs;
     }
 
     public DeviceDriverRegistry getRegistry() {
@@ -184,13 +263,56 @@ public final class DeviceManager implements AutoCloseable {
         if (closed) {
             return;
         }
-        this.currentIntervalSeconds = Math.max(5, intervalSeconds);
+        this.baseIntervalSeconds = Math.max(5L, intervalSeconds);
+        long effective = computeEffectiveIntervalSeconds(this.baseIntervalSeconds);
+        if (periodicTask != null && !periodicTask.isCancelled() && effective == this.currentIntervalSeconds) {
+            return;
+        }
+        reschedulePeriodicTask(effective, 0L);
+    }
+
+    public synchronized void setEcoModeWindowHidden(boolean hidden) {
+        if (closed) {
+            return;
+        }
+        this.ecoModeWindowHidden = hidden;
+        long effective = computeEffectiveIntervalSeconds(this.baseIntervalSeconds);
+        if (effective == this.currentIntervalSeconds) {
+            return;
+        }
+        if (periodicTask != null && !periodicTask.isCancelled()) {
+            reschedulePeriodicTask(effective, hidden ? effective : 0L);
+        } else {
+            this.currentIntervalSeconds = effective;
+        }
+    }
+
+    public boolean isEcoModeWindowHidden() {
+        return ecoModeWindowHidden;
+    }
+
+    public long getEffectivePollIntervalSeconds() {
+        return currentIntervalSeconds;
+    }
+
+    private long computeEffectiveIntervalSeconds(long baseSeconds) {
+        AppSettings currentSettings = this.settings;
+        if (ecoModeWindowHidden && currentSettings != null && currentSettings.isEcoModeEnabled()) {
+            return Math.max(Math.min(60L, baseSeconds * 2L), 30L);
+        }
+        return baseSeconds;
+    }
+
+    private void reschedulePeriodicTask(long effectiveSeconds, long initialDelaySeconds) {
+        this.currentIntervalSeconds = effectiveSeconds;
         if (periodicTask != null) {
             periodicTask.cancel(false);
         }
-        logger.info("Monitoramento automático configurado para cada " + currentIntervalSeconds + " s.");
+        String ecoTag = (ecoModeWindowHidden && settings != null && settings.isEcoModeEnabled())
+                ? " (modo eco)" : "";
+        logger.info("Monitoramento automático configurado para cada " + effectiveSeconds + " s" + ecoTag + ".");
         periodicTask = scheduler.scheduleWithFixedDelay(
-                this::pollAllInternal, 0, currentIntervalSeconds, TimeUnit.SECONDS
+                this::pollAllInternal, initialDelaySeconds, effectiveSeconds, TimeUnit.SECONDS
         );
     }
 
@@ -280,19 +402,39 @@ public final class DeviceManager implements AutoCloseable {
         if (closed || !polling.compareAndSet(false, true)) {
             return getCurrentReadings();
         }
+        final long myGeneration = cycleGeneration.incrementAndGet();
         try {
+            Runnable hook = this.prePollHook;
+            if (hook != null) {
+                try {
+                    hook.run();
+                } catch (Exception e) {
+                    logger.warn("Falha no hook de pré-atualização: " + e.getMessage());
+                }
+            }
+            if (closed || cycleGeneration.get() != myGeneration) {
+                return getCurrentReadings();
+            }
+
             List<HidDevice> attachedHid = enumerateHidOnce();
             List<BatteryDevice> toPoll = resolveDevicesToPoll(attachedHid);
 
             Map<String, DeviceReading> cycleReadings = new LinkedHashMap<>();
             Set<String> cycleDetected = new LinkedHashSet<>();
             for (BatteryDevice device : toPoll) {
+                if (closed || cycleGeneration.get() != myGeneration) {
+                    return getCurrentReadings();
+                }
                 DeviceReading previous;
                 synchronized (this) {
                     previous = readings.get(device.getId());
                 }
 
-                DeviceReading reading = querySingleDevice(device, attachedHid);
+                DeviceReading reading = querySingleDevice(device, attachedHid, previous);
+                if (closed || cycleGeneration.get() != myGeneration) {
+                    return getCurrentReadings();
+                }
+
                 boolean hardwareHere = device.isHardwarePresent(attachedHid)
                         || reading.hasBatteryPercent()
                         || reading.status().isReceiverDetectedState();
@@ -300,6 +442,9 @@ public final class DeviceManager implements AutoCloseable {
                     cycleDetected.add(device.getId());
                 }
                 synchronized (this) {
+                    if (closed || cycleGeneration.get() != myGeneration) {
+                        return getCurrentReadings();
+                    }
                     reading = enrichWithLastKnownAndSleepState(device, reading, attachedHid);
                     logTransitionIfChanged(previous, reading);
                     cycleReadings.put(device.getId(), reading);
@@ -308,6 +453,9 @@ public final class DeviceManager implements AutoCloseable {
 
             List<DeviceReading> immutable;
             synchronized (this) {
+                if (closed || cycleGeneration.get() != myGeneration) {
+                    return getCurrentReadings();
+                }
                 readings.clear();
                 readings.putAll(cycleReadings);
                 detectedDeviceIds.clear();
@@ -317,8 +465,10 @@ public final class DeviceManager implements AutoCloseable {
                 logDetectionCycleSummaryIfChanged(attachedHid.size(), immutable, cycleDetected);
             }
 
-            for (Consumer<List<DeviceReading>> listener : listeners) {
-                listener.accept(immutable);
+            if (!closed && cycleGeneration.get() == myGeneration) {
+                for (Consumer<List<DeviceReading>> listener : listeners) {
+                    listener.accept(immutable);
+                }
             }
             return immutable;
         } finally {
@@ -365,7 +515,159 @@ public final class DeviceManager implements AutoCloseable {
         return new ArrayList<>(ordered.values());
     }
 
-    private DeviceReading querySingleDevice(BatteryDevice device, List<HidDevice> attachedHid) {
+    private DeviceReading querySingleDevice(
+            BatteryDevice device,
+            List<HidDevice> attachedHid,
+            DeviceReading previous
+    ) {
+        String deviceId = device.getId();
+        AppSettings currentSettings = this.settings;
+
+        if (currentSettings != null
+                && !currentSettings.isGameSirMonitoringEnabled()
+                && GameSirCyclone2.DEVICE_ID.equals(deviceId)) {
+            openFailureBackoffs.remove(deviceId);
+            return DeviceReading.realMonitoringDisabled(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    device.getConnectionDescription(),
+                    "Monitoramento do GameSir Cyclone 2 desativado nas configurações."
+            );
+        }
+
+        if (currentSettings != null
+                && currentSettings.isReadOnlyHidMode()
+                && !device.getCapabilities().safetyInfo().allowedInReadOnlyMode()) {
+            openFailureBackoffs.remove(deviceId);
+            String detail = GameSirCyclone2.DEVICE_ID.equals(deviceId)
+                    ? "Consulta bloqueada pelo modo somente leitura (envia comando HID 0x0F 0x03)."
+                    : "Consulta bloqueada pelo modo somente leitura.";
+            return DeviceReading.realReadOnlyBlocked(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    device.getConnectionDescription(),
+                    detail
+            );
+        }
+
+        OpenFailureBackoff backoff = openFailureBackoffs.get(deviceId);
+        if (backoff != null && backoff.skipNextCycle) {
+            backoff.skipNextCycle = false;
+            String conn = previous != null ? previous.connectionLabel() : device.getConnectionDescription();
+            String detail = (previous != null && !previous.detailMessage().isBlank())
+                    ? previous.detailMessage()
+                    : "Interface HID ocupada (aguardando próximo ciclo).";
+            return DeviceReading.realOpenFailed(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    conn,
+                    detail
+            );
+        }
+
+        if (inFlightDevices.putIfAbsent(deviceId, Boolean.TRUE) != null) {
+            return DeviceReading.realTimeout(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    device.getConnectionDescription(),
+                    "Consulta anterior ainda em andamento (timeout ativo)."
+            );
+        }
+
+        Future<DeviceReading> future;
+        try {
+            future = queryExecutor.submit(() -> {
+                try {
+                    return executeDeviceRead(device, attachedHid);
+                } finally {
+                    inFlightDevices.remove(deviceId);
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            inFlightDevices.remove(deviceId);
+            if (closed) {
+                return DeviceReading.realDisconnected(
+                        deviceId,
+                        device.getDisplayName(),
+                        device.getDeviceType(),
+                        device.getConnectionDescription(),
+                        "Gerenciador encerrado."
+                );
+            }
+            return DeviceReading.realTimeout(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    device.getConnectionDescription(),
+                    "Fila de consulta HID saturada."
+            );
+        }
+
+        DeviceReading result;
+        long timeoutMs = this.perDeviceTimeoutMs;
+        try {
+            result = future.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            future.cancel(true);
+            result = DeviceReading.realTimeout(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    device.getConnectionDescription(),
+                    "Timeout (" + timeoutMs + " ms) ao consultar dispositivo."
+            );
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            result = DeviceReading.realTimeout(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    device.getConnectionDescription(),
+                    "Consulta interrompida."
+            );
+        } catch (ExecutionException ee) {
+            Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+            logger.error("Erro inesperado ao consultar " + device.getDisplayName(), cause);
+            result = DeviceReading.realDisconnected(
+                    deviceId,
+                    device.getDisplayName(),
+                    device.getDeviceType(),
+                    device.getConnectionDescription(),
+                    "Erro na consulta: " + cause.getMessage()
+            );
+        }
+
+        if (!closed) {
+            updateOpenFailureBackoff(device, result);
+        }
+        return result;
+    }
+
+    private void updateOpenFailureBackoff(BatteryDevice device, DeviceReading result) {
+        String deviceId = device.getId();
+        if (result.status() == ConnectionStatus.OPEN_FAILED) {
+            OpenFailureBackoff backoff = openFailureBackoffs.computeIfAbsent(deviceId, k -> new OpenFailureBackoff());
+            backoff.consecutiveFailures++;
+            if (backoff.consecutiveFailures >= OPEN_FAILED_BACKOFF_THRESHOLD) {
+                backoff.skipNextCycle = true;
+                if (!backoff.backoffLogged) {
+                    backoff.backoffLogged = true;
+                    logger.warn(device.getDisplayName() + " — Interface HID ocupada por "
+                            + backoff.consecutiveFailures
+                            + " ciclos consecutivos; aplicando backoff 2x para evitar contenção.");
+                }
+            }
+        } else {
+            openFailureBackoffs.remove(deviceId);
+        }
+    }
+
+    private DeviceReading executeDeviceRead(BatteryDevice device, List<HidDevice> attachedHid) {
         try {
             DeviceReading reading = attachedHid.isEmpty()
                     ? device.readBattery()
@@ -402,14 +704,20 @@ public final class DeviceManager implements AutoCloseable {
     ) {
         long nowMs = System.currentTimeMillis();
         if (reading.hasBatteryPercent()) {
-            lastKnownMap.put(device.getId(), new LastKnown(reading.batteryPercent(), reading.updatedAt(), nowMs));
+            Instant validInstant = reading.validReadingInstant() != null
+                    ? reading.validReadingInstant()
+                    : Instant.now();
+            lastKnownMap.put(
+                    device.getId(),
+                    new LastKnown(reading.batteryPercent(), reading.updatedAt(), validInstant, nowMs)
+            );
             seenDriverIds.add(device.getId());
             return reading;
         }
 
         LastKnown known = lastKnownMap.get(device.getId());
         if (known != null) {
-            reading = reading.withLastKnown(known.percent(), known.timestamp());
+            reading = reading.withLastKnown(known.percent(), known.timestamp(), known.validInstant());
             boolean withinGrace = (nowMs - known.epochMillis()) <= ASLEEP_GRACE_MILLIS;
             boolean receiverPresent = device.isHardwarePresent(attachedHid);
             if (reading.status() == ConnectionStatus.DISCONNECTED && withinGrace && receiverPresent) {
@@ -497,5 +805,6 @@ public final class DeviceManager implements AutoCloseable {
             suspendWatchTask.cancel(false);
         }
         scheduler.shutdownNow();
+        queryExecutor.shutdownNow();
     }
 }

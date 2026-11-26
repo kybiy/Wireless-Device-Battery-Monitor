@@ -1,0 +1,37 @@
+name: Feature Request
+description: Suggest a UI, usability, or robustness improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: app_version
+    attributes:
+      label: Current App Version
+      placeholder: e.g. v1.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: windows_version
+    attributes:
+      label: Windows Version (x64)
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Proposed Feature / Expected Behavior
+      description: Clearly describe what you want to happen and why it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current Behavior / Workaround
+  - type: input
+    id: device_context
+    attributes:
+      label: Relevant Devices & Connection Types (optional)
+      placeholder: e.g. Akko S9 Ultra (2.4 GHz), QCY T13 ANC (Bluetooth)

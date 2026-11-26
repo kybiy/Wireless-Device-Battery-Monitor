@@ -43,8 +43,13 @@ public final class SingleInstanceGuard implements AutoCloseable {
         this(
                 lockPath,
                 signalPath,
-                (lockPath.getParent() != null ? lockPath.getParent() : BASE_DIR).resolve("shutdown.signal")
+                resolveDefaultShutdownPath(lockPath)
         );
+    }
+
+    private static Path resolveDefaultShutdownPath(Path lockPath) {
+        Path parent = lockPath != null ? lockPath.getParent() : null;
+        return (parent != null ? parent : BASE_DIR).resolve("shutdown.signal");
     }
 
     public SingleInstanceGuard(Path lockPath, Path signalPath, Path shutdownSignalPath) {

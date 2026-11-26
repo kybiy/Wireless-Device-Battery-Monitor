@@ -55,18 +55,24 @@ public final class WindowsHidCapsInspector {
                     0,
                     null
             );
-            if (handle == null || WinBase.INVALID_HANDLE_VALUE.equals(handle)) {
+            if (!isValidHandle(handle)) {
+                handle = null;
+                // Consome o código de erro Win32 de forma limpa sem poluir logs em dispositivos sem suporte.
+                Native.getLastError();
                 return HidReportCaps.UNKNOWN;
             }
-            PointerByReference preparsedRef = new PointerByReference();
-            if (!HidLibrary.INSTANCE.HidD_GetPreparsedData(handle, preparsedRef)) {
-                return HidReportCaps.UNKNOWN;
-            }
-            Pointer preparsed = preparsedRef.getValue();
-            if (preparsed == null) {
-                return HidReportCaps.UNKNOWN;
-            }
+            Pointer preparsed = null;
             try {
+                PointerByReference preparsedRef = new PointerByReference();
+                if (!HidLibrary.INSTANCE.HidD_GetPreparsedData(handle, preparsedRef)) {
+                    Native.getLastError();
+                    return HidReportCaps.UNKNOWN;
+                }
+                preparsed = preparsedRef.getValue();
+                if (preparsed == null || Pointer.nativeValue(preparsed) == 0L) {
+                    Native.getLastError();
+                    return HidReportCaps.UNKNOWN;
+                }
                 HIDP_CAPS caps = new HIDP_CAPS();
                 int status = HidLibrary.INSTANCE.HidP_GetCaps(preparsed, caps);
                 if (status != HIDP_STATUS_SUCCESS) {
@@ -78,17 +84,43 @@ public final class WindowsHidCapsInspector {
                         caps.FeatureReportByteLength & 0xFFFF
                 );
             } finally {
-                HidLibrary.INSTANCE.HidD_FreePreparsedData(preparsed);
+                freePreparsedDataQuietly(preparsed);
             }
         } catch (Throwable ex) {
             return HidReportCaps.UNKNOWN;
         } finally {
-            if (handle != null && !WinBase.INVALID_HANDLE_VALUE.equals(handle)) {
-                try {
-                    Kernel32.INSTANCE.CloseHandle(handle);
-                } catch (Throwable ignored) {
-                    // Best-effort handle cleanup.
-                }
+            closeHandleQuietly(handle);
+        }
+    }
+
+    private static boolean isValidHandle(WinNT.HANDLE handle) {
+        if (handle == null || WinBase.INVALID_HANDLE_VALUE.equals(handle)) {
+            return false;
+        }
+        Pointer ptr = handle.getPointer();
+        if (ptr == null) {
+            return false;
+        }
+        long raw = Pointer.nativeValue(ptr);
+        return raw != 0L && raw != -1L;
+    }
+
+    private static void freePreparsedDataQuietly(Pointer preparsed) {
+        if (preparsed != null && Pointer.nativeValue(preparsed) != 0L) {
+            try {
+                HidLibrary.INSTANCE.HidD_FreePreparsedData(preparsed);
+            } catch (Throwable ignored) {
+                // Best-effort preparsed data cleanup.
+            }
+        }
+    }
+
+    private static void closeHandleQuietly(WinNT.HANDLE handle) {
+        if (isValidHandle(handle)) {
+            try {
+                Kernel32.INSTANCE.CloseHandle(handle);
+            } catch (Throwable ignored) {
+                // Best-effort handle cleanup.
             }
         }
     }

@@ -329,7 +329,6 @@ public final class TrayIconFactory {
 
         String[] deviceBitmap = selectDeviceBitmap(safeType, grid20);
         int devW = deviceBitmap[0].length();
-        int devH = deviceBitmap.length;
         int devX = (size - devW) / 2;
         int devY = (safeType == DeviceType.OTHER) ? 1 : 0;
         drawBitmap(img, deviceBitmap, devX, devY, palette.iconColor.getRGB());

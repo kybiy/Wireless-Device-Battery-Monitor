@@ -1,0 +1,99 @@
+name: Release Packaging (Windows x64)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Attach artifacts only when manually authorized (never on PRs)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-package:
+    name: Verify & Package Windows x64 Installer + Portable ZIP
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Eclipse Temurin JDK 25 (packaging + compiler --release 17)
+        id: setup-java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b1f521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Verify tests and static analysis
+        run: mvn -B clean verify
+
+      - name: Build JAR and runtime dependencies
+        run: mvn -B package -DskipTests
+
+      - name: Install WiX Toolset 3.14 via winget if missing
+        shell: pwsh
+        run: |
+          if (-not (Get-Command light.exe -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset --version=3.14.1 --yes --no-progress
+            "C:\Program Files (x86)\WiX Toolset v3.14\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+
+      - name: Package .exe installer, portable .zip, licenses & SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $wixBin = Split-Path (Get-Command light.exe).Source
+          [xml]$pom = Get-Content .\pom.xml
+          $ver = $pom.project.version.Trim()
+          $outDir = "dist/v$ver"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1 `
+            -Jdk "$env:JAVA_HOME" `
+            -Wix "$wixBin" `
+            -OutputDirectory "$outDir"
+
+          $exe = Join-Path $outDir "WirelessBattery-$ver.exe"
+          $zip = Join-Path $outDir "WirelessBattery-$ver-portable-win-x64.zip"
+          $sums = Join-Path $outDir "SHA256SUMS.txt"
+          if (!(Test-Path $exe) -or !(Test-Path $zip) -or !(Test-Path $sums)) {
+            throw "Missing release artifacts in $outDir"
+          }
+          Get-Content $sums
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e2630644702f49c7d4af21b7a5d3 # v4.6.2
+        with:
+          name: windows-x64-release-bundle
+          path: dist/
+
+  publish-github-release:
+    needs: build-and-package
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab7868d0b0c5c30e0d # v4.2.1
+        with:
+          name: windows-x64-release-bundle
+          path: dist
+
+      - name: Publish assets to GitHub Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa158ef23a12f # v2.2.2
+        with:
+          files: |
+            dist/**/WirelessBattery-*.exe
+            dist/**/WirelessBattery-*-portable-win-x64.zip
+            dist/**/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: true

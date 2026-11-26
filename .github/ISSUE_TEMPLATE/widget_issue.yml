@@ -1,0 +1,60 @@
+name: Taskbar Widget or System Tray Issue
+description: Report issues with the Win32 Shell_TrayWnd taskbar widget, Win+D, DPI scaling, or SystemTray
+title: "[Widget]: "
+labels: ["bug", "ui"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Privacy Warning:** Do not include personal usernames, emails, Bluetooth MAC addresses, or serial numbers in logs or screenshots. Use **Export Sanitized Diagnostic ZIP** and verify the preview first.
+  - type: input
+    id: app_version
+    attributes:
+      label: Application Version
+      placeholder: e.g. v1.2.0 or v1.3.0-dev
+    validations:
+      required: true
+  - type: dropdown
+    id: windows_version
+    attributes:
+      label: Windows Version (x64) & Build
+      options:
+        - Windows 11 x64
+        - Windows 10 x64 (Experimental)
+    validations:
+      required: true
+  - type: input
+    id: display_setup
+    attributes:
+      label: Display Scaling (DPI), Taskbar Alignment & Multi-Monitor Setup
+      placeholder: e.g. 1920x1080 @ 100%, centered taskbar, single monitor
+    validations:
+      required: true
+  - type: input
+    id: device_model
+    attributes:
+      label: Connected Device(s) & Connection Type
+      placeholder: e.g. Delux M800 Pro (2.4 GHz), QCY T13 ANC (Bluetooth)
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed_behavior
+    attributes:
+      label: Observed Behavior (e.g. Win+D, explorer.exe restart, overlap, clipping)
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized Diagnostic ZIP (especially Widget Backend line)
+  - type: checkboxes
+    id: privacy_confirm
+    attributes:
+      label: Privacy Check
+      options:
+        - label: I verified that no emails, Bluetooth MACs, serial numbers, or personal usernames are included.
+          required: true

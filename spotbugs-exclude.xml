@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+  <!-- JNA Structure subclasses require public non-final fields mapped to native Win32/HID structs -->
+  <Match>
+    <Bug pattern="URF_UNREAD_PUBLIC_OR_PROTECTED_FIELD,UUF_UNUSED_PUBLIC_OR_PROTECTED_FIELD,PA_PUBLIC_PRIMITIVE_ATTRIBUTE"/>
+    <Or>
+      <Class name="~.*\$HIDP_CAPS"/>
+      <Class name="~.*\$SP_DEVINFO_DATA"/>
+      <Class name="~.*\$DEVPROPKEY"/>
+      <Class name="~.*\$BLUETOOTH_FIND_RADIO_PARAMS"/>
+      <Class name="~.*\$TTTOOLINFOW"/>
+      <Class name="~.*\$TRACKMOUSEEVENT"/>
+      <Class name="~.*\$INITCOMMONCONTROLSEX"/>
+      <Class name="~.*\$PROPERTYKEY"/>
+      <Class name="~.*\$BLUETOOTH_FIND_RADIO_PARAMS"/>
+      <Class name="~.*\$BLENDFUNCTION"/>
+      <Class name="~.*\$SIZE"/>
+      <Class name="~.*\$APPBARDATA"/>
+      <Class name="~.*\$NOTIFYICONIDENTIFIER"/>
+      <Class name="~.*\$GUITHREADINFO"/>
+      <Class name="~.*\$ProcessMemoryCounters"/>
+    </Or>
+  </Match>
+  <!-- CLI main entry point terminates intentionally on explicit shutdown/already-running guard -->
+  <Match>
+    <Class name="br.com.wirelessbattery.Main"/>
+    <Bug pattern="DM_EXIT"/>
+  </Match>
+  <!-- Intentional static reference holders / mutable Swing panels injected from constructors -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+  </Match>
+</FindBugsFilter>

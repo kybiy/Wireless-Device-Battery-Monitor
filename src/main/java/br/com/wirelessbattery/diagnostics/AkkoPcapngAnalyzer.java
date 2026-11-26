@@ -107,7 +107,8 @@ public final class AkkoPcapngAnalyzer {
 
     public static CaptureAnalysis analyzeFile(Path pcapngPath, Integer fallbackUsbAddress) throws IOException {
         byte[] raw = Files.readAllBytes(pcapngPath);
-        return analyzeBytes(pcapngPath.getFileName().toString(), raw, fallbackUsbAddress);
+        Path fn = pcapngPath.getFileName();
+        return analyzeBytes(fn != null ? fn.toString() : pcapngPath.toString(), raw, fallbackUsbAddress);
     }
 
     public static CaptureAnalysis analyzeBytes(String sourceName, byte[] rawBytes, Integer fallbackUsbAddress) {

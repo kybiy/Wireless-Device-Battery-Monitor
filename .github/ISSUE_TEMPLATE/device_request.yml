@@ -1,0 +1,68 @@
+name: New Device Request
+description: Request battery monitoring support for a new wireless peripheral
+title: "[Device Request]: "
+labels: ["enhancement", "device-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Note:** Wireless Battery Monitor only supports peripherals with safe, documented read-only or verified battery protocols on Windows x64. Never attach raw personal USB captures containing serials, MACs, or personal identifiers.
+  - type: input
+    id: device_model
+    attributes:
+      label: Device Brand & Exact Model
+      placeholder: e.g. Mouse / Headset / Controller model name
+    validations:
+      required: true
+  - type: input
+    id: firmware_version
+    attributes:
+      label: Firmware Version (if known)
+      placeholder: e.g. v1.0.4 or Unknown
+  - type: dropdown
+    id: connection_type
+    attributes:
+      label: Connection Type
+      options:
+        - 2.4 GHz USB Dongle (USB HID)
+        - USB Cable (USB HID)
+        - Bluetooth (Windows PnP / Battery Service)
+    validations:
+      required: true
+  - type: dropdown
+    id: windows_version
+    attributes:
+      label: Windows Version (x64)
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+    validations:
+      required: true
+  - type: input
+    id: app_version
+    attributes:
+      label: App Version Used for Passive HID Inspection
+      placeholder: e.g. v1.2.0
+    validations:
+      required: true
+  - type: textarea
+    id: vid_pid_and_refs
+    attributes:
+      label: VID / PID, HID Interfaces & Open-Source Protocol References
+      description: Paste sanitized output from the app's passive HID Diagnostics (VID/PID/UsagePage/Usage) and links to any open-source GPL/MIT driver references, if known.
+    validations:
+      required: true
+  - type: textarea
+    id: windows_battery_check
+    attributes:
+      label: Expected vs. Observed Battery Visibility
+      description: Does Windows Settings already show battery % (for Bluetooth), or does only vendor software show it?
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy_confirm
+    attributes:
+      label: Privacy Check
+      options:
+        - label: I removed any emails, Bluetooth MAC addresses, serial numbers, or personal usernames from attached diagnostics.
+          required: true

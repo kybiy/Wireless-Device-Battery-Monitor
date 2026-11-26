@@ -70,6 +70,10 @@ try {
 
     $licensesDir = New-Item -ItemType Directory -Force -Path (Join-Path $inputDirectory 'licenses')
     Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination (Join-Path $licensesDir.FullName 'WirelessBattery-GPL-3.0.txt') -Force
+    $thirdPartyNotices = Join-Path $repoRoot 'THIRD-PARTY-NOTICES.md'
+    if (Test-Path -LiteralPath $thirdPartyNotices) {
+        Copy-Item -LiteralPath $thirdPartyNotices -Destination (Join-Path $licensesDir.FullName 'THIRD-PARTY-NOTICES.md') -Force
+    }
     if (Test-Path -LiteralPath (Join-Path $repoRoot 'docs\licenses')) {
         Copy-Item -Path (Join-Path $repoRoot 'docs\licenses\*') -Destination $licensesDir.FullName -Force
     }

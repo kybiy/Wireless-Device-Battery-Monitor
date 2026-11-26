@@ -1,5 +1,6 @@
 package br.com.wirelessbattery;
 
+import br.com.wirelessbattery.audio.AudioEndpointInfo;
 import br.com.wirelessbattery.audio.WindowsAudioOutputInspector;
 import br.com.wirelessbattery.bluetooth.WindowsBluetoothScanner;
 import br.com.wirelessbattery.config.AppSettings;
@@ -19,11 +20,17 @@ import br.com.wirelessbattery.device.QcyT13Bluetooth;
 import br.com.wirelessbattery.device.QcyT13Config;
 import br.com.wirelessbattery.diagnostics.AppLogger;
 import br.com.wirelessbattery.diagnostics.HidDiagnosticsService;
+import br.com.wirelessbattery.history.BatteryHistoryStore;
+import br.com.wirelessbattery.i18n.I18n;
+import br.com.wirelessbattery.notification.BatteryAlertManager;
 import br.com.wirelessbattery.selection.CategoryDeviceSelector;
 import br.com.wirelessbattery.simulation.SimulationManager;
 import br.com.wirelessbattery.ui.MainWindow;
 import br.com.wirelessbattery.ui.ThemeManager;
+import br.com.wirelessbattery.update.UpdateCheckerService;
 import java.util.Arrays;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.SwingUtilities;
@@ -70,8 +77,12 @@ public final class Main {
             WindowsStartupManager.reconcileStartupSetting(settings, logger);
 
             HidServiceProvider hidProvider = new HidServiceProvider(logger);
-            DeviceManager deviceManager = new DeviceManager(hidProvider, logger);
+            DeviceManager deviceManager = new DeviceManager(hidProvider, settings, logger);
             SimulationManager simulationManager = new SimulationManager(logger);
+            I18n i18n = new I18n(settings.getLanguage());
+            BatteryHistoryStore historyStore = new BatteryHistoryStore(settings, logger);
+            UpdateCheckerService updateService = new UpdateCheckerService();
+            BatteryAlertManager alertManager = new BatteryAlertManager();
 
             DeluxM800ProConfig m800Config = DeluxM800ProConfig.loadFromEnvironment();
             AkkoVergeS9Config akkoConfig = AkkoVergeS9Config.loadFromEnvironment();
@@ -79,7 +90,10 @@ public final class Main {
             QcyT13Config qcyConfig = QcyT13Config.loadFromEnvironment();
             WindowsBluetoothScanner bluetoothScanner = new WindowsBluetoothScanner();
             WindowsAudioOutputInspector audioOutputInspector = new WindowsAudioOutputInspector();
-            CategoryDeviceSelector categorySelector = new CategoryDeviceSelector(audioOutputInspector, logger);
+            AtomicReference<Optional<AudioEndpointInfo>> cachedAudioOutput = new AtomicReference<>(Optional.empty());
+            Runnable refreshAudioCache = () -> cachedAudioOutput.set(audioOutputInspector.getDefaultRenderEndpoint());
+            deviceManager.setPrePollHook(refreshAudioCache);
+            CategoryDeviceSelector categorySelector = new CategoryDeviceSelector(cachedAudioOutput::get, logger);
 
             HidDiagnosticsService diagnosticsService = new HidDiagnosticsService(
                     hidProvider, m800Config, akkoConfig, cyclone2Config, logger
@@ -154,6 +168,7 @@ public final class Main {
                     }
                 }
                 deviceManager.close();
+                historyStore.close();
                 hidProvider.close();
                 instanceGuard.close();
             };
@@ -171,6 +186,11 @@ public final class Main {
                     diagnosticsService,
                     logger,
                     categorySelector,
+                    i18n,
+                    historyStore,
+                    updateService,
+                    alertManager,
+                    refreshAudioCache,
                     () -> {
                         closeServicesOnce.run();
                         System.exit(0);
@@ -182,6 +202,16 @@ public final class Main {
                     () -> window.requestGracefulExit("Encerramento seguro solicitado por atualizador/instalador.")
             );
             deviceManager.startPolling(settings.getPollIntervalSeconds());
+
+            if (settings.isAutoCheckUpdates()) {
+                CompletableFuture.runAsync(() -> updateService.checkIfDue(settings).ifPresent(res -> {
+                    try {
+                        settings.save();
+                    } catch (Exception ignored) {
+                        // Cache de atualização opcional
+                    }
+                }));
+            }
 
             boolean startMinimized = argMinimized || settings.isStartMinimized();
             if (!startMinimized) {

@@ -1,0 +1,68 @@
+name: Bug Report
+description: Report a bug or unexpected reading in Wireless Battery Monitor
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Privacy Warning:** Never paste personal email addresses, Bluetooth MAC addresses, Windows usernames, device serial numbers, or raw `.pcapng` USB captures. Use the app's **Export Sanitized Diagnostic ZIP** feature and verify its preview before attaching.
+  - type: input
+    id: app_version
+    attributes:
+      label: Application Version
+      placeholder: e.g. v1.2.0 or v1.3.0-dev
+    validations:
+      required: true
+  - type: dropdown
+    id: windows_version
+    attributes:
+      label: Windows Version (x64)
+      options:
+        - Windows 11 x64
+        - Windows 10 x64 (Experimental)
+        - Other (please specify in details)
+    validations:
+      required: true
+  - type: input
+    id: device_model
+    attributes:
+      label: Device Model & Firmware Version
+      placeholder: e.g. Delux M800 Pro (fw unknown), QCY-T13 ANC, Akko S9 Ultra, GameSir Cyclone 2
+    validations:
+      required: true
+  - type: dropdown
+    id: connection_type
+    attributes:
+      label: Connection Type
+      options:
+        - 2.4 GHz USB Dongle
+        - USB Cable
+        - Bluetooth
+        - Simulation Mode / No Hardware
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed_behavior
+    attributes:
+      label: Observed Behavior & Steps to Reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized Diagnostic ZIP or Excerpt
+      description: Attach the ZIP exported via Diagnostics -> Export Sanitized Diagnostic Bundle (after checking the preview for personal info).
+  - type: checkboxes
+    id: privacy_confirm
+    attributes:
+      label: Privacy Check
+      options:
+        - label: I verified that no emails, Bluetooth MAC addresses, serial numbers, or personal tokens are included.
+          required: true

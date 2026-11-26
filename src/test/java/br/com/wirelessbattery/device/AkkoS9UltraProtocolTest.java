@@ -137,7 +137,7 @@ class AkkoS9UltraProtocolTest {
 
     private static byte[] battery47WithBadCrc() {
         byte[] frame = buildSignedReply(0x12, 0x00, 47);
-        frame[63] ^= 0xFF;
+        frame[63] = (byte) (frame[63] ^ 0xFF);
         return frame;
     }
 

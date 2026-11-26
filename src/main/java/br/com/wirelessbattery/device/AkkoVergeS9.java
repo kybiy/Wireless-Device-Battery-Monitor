@@ -22,6 +22,22 @@ public final class AkkoVergeS9 implements BatteryDevice {
     public static final String DISPLAY_NAME = "Akko S9 Ultra";
     public static final String CONNECTION = "2.4 GHz";
 
+    private static final DriverCapabilities CAPABILITIES = new DriverCapabilities(
+            TransportType.USB_HID,
+            false,
+            true,
+            10,
+            new ProtocolSafetyInfo(
+                    QueryMechanism.HID_OUTPUT_REPORT_VALIDATED,
+                    false,
+                    true,
+                    true,
+                    false,
+                    "Consulta somente-leitura validada via Output Report HID 0x02 com CRC-16 (comandos 0x10/0x12 para estado e bateria), sem comandos de áudio, EQ ou firmware.",
+                    ""
+            )
+    );
+
     private static final int SINGLE_READ_TIMEOUT_MS = 200;
 
     private final HidServiceProvider hidProvider;
@@ -67,6 +83,11 @@ public final class AkkoVergeS9 implements BatteryDevice {
     @Override
     public boolean supportsBatteryQuery() {
         return true;
+    }
+
+    @Override
+    public DriverCapabilities getCapabilities() {
+        return CAPABILITIES;
     }
 
     @Override

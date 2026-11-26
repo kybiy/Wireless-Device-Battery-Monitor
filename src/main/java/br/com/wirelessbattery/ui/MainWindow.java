@@ -6,23 +6,32 @@ import br.com.wirelessbattery.config.DisplayMode;
 import br.com.wirelessbattery.config.WindowsStartupManager;
 import br.com.wirelessbattery.device.BatteryDevice;
 import br.com.wirelessbattery.device.DeviceManager;
+import br.com.wirelessbattery.device.GameSirCyclone2;
 import br.com.wirelessbattery.device.QcyT13Bluetooth;
 import br.com.wirelessbattery.diagnostics.AppLogger;
 import br.com.wirelessbattery.diagnostics.HidDiagnosticsService;
+import br.com.wirelessbattery.history.BatteryHistoryStore;
+import br.com.wirelessbattery.i18n.I18n;
 import br.com.wirelessbattery.model.ConnectionStatus;
 import br.com.wirelessbattery.model.DeviceReading;
 import br.com.wirelessbattery.model.DeviceType;
+import br.com.wirelessbattery.notification.BatteryAlertManager;
 import br.com.wirelessbattery.selection.CategoryDeviceSelector;
 import br.com.wirelessbattery.simulation.SimulationManager;
+import br.com.wirelessbattery.update.UpdateCheckerService;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.Frame;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.GraphicsEnvironment;
 import java.awt.Point;
 import java.awt.RenderingHints;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
@@ -44,10 +53,12 @@ import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.WindowConstants;
 
@@ -65,12 +76,17 @@ public final class MainWindow extends JFrame {
     private final HidDiagnosticsService diagnosticsService;
     private final AppLogger logger;
     private final CategoryDeviceSelector categorySelector;
+    private final I18n i18n;
+    private final BatteryHistoryStore historyStore;
+    private final UpdateCheckerService updateService;
+    private final BatteryAlertManager alertManager;
+    private final Runnable offEdtAudioRefreshAction;
     private final Runnable onExitCallback;
 
     private final JPanel rootPanel = new JPanel(new BorderLayout(0, 0));
     private final JLabel headerBatteryIcon = new JLabel();
     private final JLabel titleLabel = new JLabel("Wireless Battery");
-    private final JLabel subtitleLabel = new JLabel("Monitor de dispositivos");
+    private final JLabel subtitleLabel = new JLabel("Monitoramento em tempo real");
     private final IconButton refreshButton;
     private final IconButton settingsButton;
     private final JPanel headerDivider = new JPanel();
@@ -79,23 +95,26 @@ public final class MainWindow extends JFrame {
     private final Map<String, DeviceCardPanel> cardMap = new LinkedHashMap<>();
 
     private final JLabel updatedStatusLabel = new JLabel("Atualizado agora");
-    private final JLabel diagnosticsLink = new JLabel("Diagnóstico");
-    private final JLabel simulationAdjustLink = new JLabel("Simulação");
+    private final JLabel historyLink = new JLabel("· Histórico");
+    private final JLabel diagnosticsLink = new JLabel("· Diagnóstico");
+    private final JLabel simulationAdjustLink = new JLabel("· Simulação");
     private final JLabel deviceCountLabel = new JLabel("0 dispositivos");
     private final JLabel simulationCaptionLabel = new JLabel(
-            "Modo de simulação ativo — valores fictícios, separados das leituras reais."
+            "Modo de simulação ativo — valores ilustrativos"
     );
 
     private final TrayDisplayController trayController;
     private final TaskbarWidgetWindow taskbarWidget;
     private final Timer explorerWatchTimer;
     private final AtomicBoolean uiShuttingDown = new AtomicBoolean(false);
+    private final AtomicBoolean audioRefreshInFlight = new AtomicBoolean(false);
+    private final AtomicBoolean gameSirPromptShown = new AtomicBoolean(false);
     private long lastKnownTaskbarPeer;
     private List<String> displayedCardIds;
     private List<DeviceReading> latestSelectedReadings = List.of();
-    private boolean latestUsingSimulation;
-    private int latestRealCandidateCount;
-    private int latestSimCandidateCount;
+    private volatile boolean latestUsingSimulation;
+    private volatile int latestRealCandidateCount;
+    private volatile int latestSimCandidateCount;
     private Color footerIconColor;
     private boolean minimizedBootPending;
     private int minimizedBootRetryCount;
@@ -133,6 +152,38 @@ public final class MainWindow extends JFrame {
             CategoryDeviceSelector categorySelector,
             Runnable onExitCallback
     ) {
+        this(
+                settings,
+                themeManager,
+                deviceManager,
+                simulationManager,
+                diagnosticsService,
+                logger,
+                categorySelector,
+                new I18n(settings != null ? settings.getLanguage() : null),
+                null,
+                new UpdateCheckerService(),
+                new BatteryAlertManager(),
+                null,
+                onExitCallback
+        );
+    }
+
+    public MainWindow(
+            AppSettings settings,
+            ThemeManager themeManager,
+            DeviceManager deviceManager,
+            SimulationManager simulationManager,
+            HidDiagnosticsService diagnosticsService,
+            AppLogger logger,
+            CategoryDeviceSelector categorySelector,
+            I18n i18n,
+            BatteryHistoryStore historyStore,
+            UpdateCheckerService updateService,
+            BatteryAlertManager alertManager,
+            Runnable offEdtAudioRefreshAction,
+            Runnable onExitCallback
+    ) {
         super("Wireless Battery");
         this.settings = settings;
         this.themeManager = themeManager;
@@ -141,6 +192,11 @@ public final class MainWindow extends JFrame {
         this.diagnosticsService = diagnosticsService;
         this.logger = logger;
         this.categorySelector = categorySelector != null ? categorySelector : new CategoryDeviceSelector(logger);
+        this.i18n = i18n != null ? i18n : new I18n(settings != null ? settings.getLanguage() : null);
+        this.historyStore = historyStore;
+        this.updateService = updateService != null ? updateService : new UpdateCheckerService();
+        this.alertManager = alertManager != null ? alertManager : new BatteryAlertManager();
+        this.offEdtAudioRefreshAction = offEdtAudioRefreshAction;
         this.onExitCallback = onExitCallback;
 
         setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
@@ -148,16 +204,18 @@ public final class MainWindow extends JFrame {
         setPreferredSize(new Dimension(560, 492));
         applyWindowIcon();
 
-        this.refreshButton = new IconButton(DeviceIconFactory.IconName.REFRESH, "Atualizar agora", () -> {
-            updatedStatusLabel.setText("Atualizando...");
+        this.refreshButton = new IconButton(DeviceIconFactory.IconName.REFRESH, this.i18n.t("app.refreshTooltip"), () -> {
+            updatedStatusLabel.setText(this.i18n.t("age.updating"));
             deviceManager.refreshNow();
         });
-        this.settingsButton = new IconButton(DeviceIconFactory.IconName.SLIDERS, "Configurações", () -> openSettingsDialog(false));
+        this.settingsButton = new IconButton(DeviceIconFactory.IconName.SLIDERS, this.i18n.t("app.settingsTooltip"), () -> openSettingsDialog(false));
 
         this.trayController = new TrayDisplayController(
                 settings,
                 deviceManager,
                 logger,
+                this.alertManager,
+                this.i18n,
                 this::restoreFromTray,
                 deviceManager::refreshNow,
                 () -> openSettingsDialog(false),
@@ -175,11 +233,25 @@ public final class MainWindow extends JFrame {
                 () -> openSettingsDialog(false),
                 this::exitApplication
         );
+        this.taskbarWidget.setI18n(this.i18n);
         this.taskbarWidget.setOnAvailabilityChanged(this::syncExternalIndicators);
         this.lastKnownTaskbarPeer = WindowsTaskbarLocator.taskbarPeer();
         this.explorerWatchTimer = new Timer(2000, e -> checkExplorerAndIndicatorsState());
         this.explorerWatchTimer.setRepeats(true);
         this.explorerWatchTimer.start();
+
+        addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentShown(ComponentEvent e) {
+                syncEcoModeWindowState();
+            }
+
+            @Override
+            public void componentHidden(ComponentEvent e) {
+                syncEcoModeWindowState();
+            }
+        });
+        addWindowStateListener(e -> syncEcoModeWindowState());
 
         addWindowListener(new WindowAdapter() {
             @Override
@@ -199,12 +271,15 @@ public final class MainWindow extends JFrame {
         rootPanel.add(buildFooter(), BorderLayout.SOUTH);
         setContentPane(rootPanel);
 
+        this.i18n.addLanguageListener(() -> SwingUtilities.invokeLater(this::refreshLocalizedText));
         bindListeners();
         applyCurrentSettings(false);
+        refreshLocalizedText();
         refreshDisplayedCards();
 
         pack();
         restoreWindowPosition();
+        syncEcoModeWindowState();
     }
 
     private void applyWindowIcon() {
@@ -212,7 +287,7 @@ public final class MainWindow extends JFrame {
             if (in != null) {
                 setIconImage(javax.imageio.ImageIO.read(in));
             }
-        } catch (Exception ignored) {
+        } catch (IOException | RuntimeException ignored) {
             // Mantém ícone padrão se o recurso não estiver disponível
         }
     }
@@ -281,21 +356,42 @@ public final class MainWindow extends JFrame {
         leftLinks.setOpaque(false);
         updatedStatusLabel.setFont(ThemeManager.fontRegular(12f));
 
+        historyLink.setFont(ThemeManager.fontRegular(12f));
+        historyLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        historyLink.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 0));
+        historyLink.setVisible(historyStore != null);
+        historyLink.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (historyStore != null) {
+                    new BatteryHistoryDialog(MainWindow.this, historyStore, settings, themeManager, i18n,
+                            simulationManager.isEnabled()).setVisible(true);
+                }
+            }
+        });
+
         diagnosticsLink.setFont(ThemeManager.fontRegular(12f));
         diagnosticsLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         diagnosticsLink.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 0));
-        diagnosticsLink.setToolTipText("Abrir ferramenta de diagnóstico HID (somente leitura)");
         diagnosticsLink.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
-                new HidDiagnosticsDialog(MainWindow.this, diagnosticsService, logger).setVisible(true);
+                new HidDiagnosticsDialog(
+                        MainWindow.this,
+                        diagnosticsService,
+                        logger,
+                        settings,
+                        deviceManager.getCurrentReadings(),
+                        taskbarWidget.formatDiagnosticSummary(
+                                latestUsingSimulation, latestRealCandidateCount, latestSimCandidateCount),
+                        i18n
+                ).setVisible(true);
             }
         });
 
         simulationAdjustLink.setFont(ThemeManager.fontRegular(12f));
         simulationAdjustLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         simulationAdjustLink.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 0));
-        simulationAdjustLink.setToolTipText("Ajustar valores do modo de simulação");
         simulationAdjustLink.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -304,6 +400,7 @@ public final class MainWindow extends JFrame {
         });
 
         leftLinks.add(updatedStatusLabel);
+        leftLinks.add(historyLink);
         leftLinks.add(diagnosticsLink);
         leftLinks.add(simulationAdjustLink);
 
@@ -333,7 +430,7 @@ public final class MainWindow extends JFrame {
         recomputeSelectedState();
         boolean simActive = this.latestUsingSimulation;
         simulationCaptionLabel.setVisible(simActive);
-        simulationAdjustLink.setText(simActive ? "· Ajustar simulação" : "· Simulação");
+        simulationAdjustLink.setText(simActive ? i18n.t("app.simulationLink.active") : i18n.t("app.simulationLink.inactive"));
 
         List<DeviceReading> activeList = this.latestSelectedReadings;
         List<String> slotKeys = activeList.stream().map(MainWindow::slotKeyFor).toList();
@@ -351,7 +448,7 @@ public final class MainWindow extends JFrame {
                 String slotKey = slotKeys.get(i);
                 DeviceCardPanel card = cardMap.get(slotKey);
                 if (card == null) {
-                    card = new DeviceCardPanel(themeManager, settings, reading);
+                    card = new DeviceCardPanel(themeManager, settings, reading, i18n);
                     cardMap.put(slotKey, card);
                 } else {
                     card.updateReading(reading);
@@ -362,6 +459,14 @@ public final class MainWindow extends JFrame {
                     cardsListPanel.add(Box.createVerticalStrut(10));
                 }
             }
+        }
+
+        if (historyStore != null) {
+            historyStore.recordReadings(simActive ? simulationManager.getCandidateReadings() : deviceManager.getCurrentReadings());
+        }
+        if (!simActive) {
+            trayController.evaluateAlertsStandalone(deviceManager.getCurrentReadings());
+            maybeShowGameSirFirstUseNotice();
         }
 
         logUiSummaryIfChanged(activeList, simActive);
@@ -538,13 +643,13 @@ public final class MainWindow extends JFrame {
     private void updateFooterSummary(List<DeviceReading> activeList) {
         LocalTime last = deviceManager.getLastPollTime();
         if (last == null || Duration.between(last, LocalTime.now()).getSeconds() < 15) {
-            updatedStatusLabel.setText("Atualizado agora");
+            updatedStatusLabel.setText(i18n.t("age.updatedNow"));
         } else {
-            updatedStatusLabel.setText("Atualizado às " + last.format(TIME_FMT));
+            updatedStatusLabel.setText(i18n.t("age.footerAt", last.format(TIME_FMT)));
         }
 
         int count = activeList.size();
-        String label = count == 1 ? "1 dispositivo" : count + " dispositivos";
+        String label = count == 1 ? i18n.t("app.deviceCount.one") : i18n.t("app.deviceCount.many", count);
         deviceCountLabel.setText(label);
         Color checkColor = count > 0 ? DeviceIconFactory.COLOR_HIGH : themeManager.mutedText();
         if (!checkColor.equals(footerIconColor)) {
@@ -595,28 +700,43 @@ public final class MainWindow extends JFrame {
     private void openSettingsDialog(boolean openSimulationTab) {
         boolean previousStartupPreference = settings.isStartWithWindows();
         int prevInterval = settings.getPollIntervalSeconds();
+        boolean prevReadOnly = settings.isReadOnlyHidMode();
+        boolean prevGameSir = settings.isGameSirMonitoringEnabled();
 
         SettingsDialog dialog = new SettingsDialog(
                 this,
                 settings,
                 deviceManager.getRegisteredDevices(),
                 simulationManager,
-                openSimulationTab
+                openSimulationTab,
+                themeManager,
+                i18n,
+                historyStore,
+                updateService,
+                alertManager,
+                trayController::deliverNotification
         );
         dialog.setVisible(true);
         if (!dialog.wasSaved()) {
             return;
         }
 
+        if (i18n.getConfiguredLanguage() != settings.getLanguage()) {
+            i18n.setLanguage(settings.getLanguage());
+        }
         if (previousStartupPreference != settings.isStartWithWindows()) {
             WindowsStartupManager.applyStartupSetting(settings.isStartWithWindows(), logger);
         }
         if (prevInterval != settings.getPollIntervalSeconds()) {
             deviceManager.updatePollInterval(settings.getPollIntervalSeconds());
         }
+        syncEcoModeWindowState();
         taskbarWidget.refreshLayoutFromSettings();
         applyCurrentSettings(true);
         saveSettingsQuietly();
+        if (prevReadOnly != settings.isReadOnlyHidMode() || prevGameSir != settings.isGameSirMonitoringEnabled()) {
+            deviceManager.refreshNow();
+        }
     }
 
     private void applyCurrentSettings(boolean updateUiTheme) {
@@ -651,11 +771,12 @@ public final class MainWindow extends JFrame {
         headerDivider.setBackground(themeManager.subtleBorder());
 
         updatedStatusLabel.setForeground(themeManager.secondaryText());
+        historyLink.setForeground(themeManager.secondaryText());
         diagnosticsLink.setForeground(themeManager.secondaryText());
-        diagnosticsLink.setText("· Diagnóstico");
         simulationAdjustLink.setForeground(themeManager.secondaryText());
         deviceCountLabel.setForeground(themeManager.secondaryText());
         simulationCaptionLabel.setForeground(themeManager.secondaryText());
+        refreshLocalizedText();
 
         refreshButton.refreshIcon();
         settingsButton.refreshIcon();
@@ -743,7 +864,30 @@ public final class MainWindow extends JFrame {
         }
 
         if (!latestUsingSimulation && hasMultipleConnectedRealHeadsets()) {
-            refreshDisplayedCards();
+            if (offEdtAudioRefreshAction != null) {
+                if (audioRefreshInFlight.compareAndSet(false, true)) {
+                    new SwingWorker<Void, Void>() {
+                        @Override
+                        protected Void doInBackground() {
+                            try {
+                                offEdtAudioRefreshAction.run();
+                            } finally {
+                                audioRefreshInFlight.set(false);
+                            }
+                            return null;
+                        }
+
+                        @Override
+                        protected void done() {
+                            if (!uiShuttingDown.get()) {
+                                refreshDisplayedCards();
+                            }
+                        }
+                    }.execute();
+                }
+            } else {
+                refreshDisplayedCards();
+            }
         }
 
         if (minimizedBootPending) {
@@ -810,12 +954,79 @@ public final class MainWindow extends JFrame {
         }
     }
 
+    private void refreshLocalizedText() {
+        titleLabel.setText(i18n.t("app.title"));
+        subtitleLabel.setText(i18n.t("app.subtitle"));
+        historyLink.setText(i18n.t("app.historyLink"));
+        diagnosticsLink.setText(i18n.t("app.diagnosticsLink"));
+        simulationCaptionLabel.setText(i18n.t("app.simulationBanner"));
+        refreshButton.setToolTipText(i18n.t("app.refreshTooltip"));
+        settingsButton.setToolTipText(i18n.t("app.settingsTooltip"));
+        trayController.setI18n(i18n);
+        taskbarWidget.setI18n(i18n);
+        displayedCardIds = null;
+    }
+
+    private void syncEcoModeWindowState() {
+        boolean hidden = !isVisible() || (getExtendedState() & Frame.ICONIFIED) != 0;
+        deviceManager.setEcoModeWindowHidden(hidden);
+    }
+
+    private void maybeShowGameSirFirstUseNotice() {
+        if (!isShowing() || GraphicsEnvironment.isHeadless()
+                || "true".equalsIgnoreCase(System.getProperty("wirelessbattery.suppressDialogs"))
+                || settings.isGameSirSafetyNoticeAcknowledged()
+                || settings.isReadOnlyHidMode()
+                || !settings.isGameSirMonitoringEnabled()
+                || !gameSirPromptShown.compareAndSet(false, true)) {
+            return;
+        }
+        boolean gameSirPresent = false;
+        for (DeviceReading r : deviceManager.getCurrentReadings()) {
+            if (GameSirCyclone2.DEVICE_ID.equals(r.deviceId())
+                    && (r.status().isOnline() || r.status().isReceiverDetectedState())) {
+                gameSirPresent = true;
+                break;
+            }
+        }
+        if (!gameSirPresent) {
+            gameSirPromptShown.set(false);
+            return;
+        }
+        settings.setGameSirSafetyNoticeAcknowledged(true);
+        saveSettingsQuietly();
+        SwingUtilities.invokeLater(() -> {
+            Object[] options = {
+                    i18n.t("settings.safety.keepGameSir"),
+                    i18n.t("settings.safety.enableReadOnly")
+            };
+            int choice = JOptionPane.showOptionDialog(
+                    this,
+                    i18n.t("settings.safety.firstUseMessage"),
+                    i18n.t("settings.safety.firstUseTitle"),
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.INFORMATION_MESSAGE,
+                    null,
+                    options,
+                    options[0]
+            );
+            if (choice == 1) {
+                settings.setReadOnlyHidMode(true);
+                saveSettingsQuietly();
+                deviceManager.refreshNow();
+            }
+        });
+    }
+
     public void releaseUiResourcesForShutdown() {
         if (!uiShuttingDown.compareAndSet(false, true)) {
             return;
         }
         explorerWatchTimer.stop();
         rememberWindowPosition();
+        if (historyStore != null) {
+            historyStore.close();
+        }
         trayController.removeAllIcons();
         taskbarWidget.shutdown();
         dispose();
@@ -838,7 +1049,7 @@ public final class MainWindow extends JFrame {
      */
     private final class IconButton extends JButton {
         private final DeviceIconFactory.IconName iconName;
-        private boolean hovered;
+        private volatile boolean hovered;
 
         IconButton(DeviceIconFactory.IconName iconName, String tooltip, Runnable action) {
             this.iconName = iconName;

@@ -1,9 +1,14 @@
 package br.com.wirelessbattery.ui;
 
+import br.com.wirelessbattery.config.AppSettings;
 import br.com.wirelessbattery.config.AppVersion;
 import br.com.wirelessbattery.diagnostics.AppLogger;
+import br.com.wirelessbattery.diagnostics.DiagnosticBundleExporter;
+import br.com.wirelessbattery.diagnostics.DiagnosticSanitizer;
 import br.com.wirelessbattery.diagnostics.HidDeviceInfo;
 import br.com.wirelessbattery.diagnostics.HidDiagnosticsService;
+import br.com.wirelessbattery.i18n.I18n;
+import br.com.wirelessbattery.model.DeviceReading;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -18,6 +23,7 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -45,6 +51,10 @@ import javax.swing.table.AbstractTableModel;
 public final class HidDiagnosticsDialog extends JDialog {
     private final HidDiagnosticsService diagnosticsService;
     private final AppLogger logger;
+    private final AppSettings settings;
+    private final List<DeviceReading> driverStates;
+    private final String widgetBackendSummary;
+    private final I18n i18n;
     private final HidTableModel tableModel = new HidTableModel();
     private final JTable table = new JTable(tableModel);
     private final JTextField filterField = new JTextField(26);
@@ -52,6 +62,7 @@ public final class HidDiagnosticsDialog extends JDialog {
     private final JButton refreshButton = new JButton("Atualizar lista");
     private final JButton copyButton = new JButton("Copiar relatório");
     private final JButton exportButton = new JButton("Exportar .txt");
+    private final JButton exportZipButton = new JButton("Exportar diagnóstico (.zip)...");
 
     private JTextArea logArea;
     private Consumer<String> logListener;
@@ -62,9 +73,26 @@ public final class HidDiagnosticsDialog extends JDialog {
     }
 
     public HidDiagnosticsDialog(JFrame owner, HidDiagnosticsService diagnosticsService, AppLogger logger) {
-        super(owner, "Diagnóstico HID (Somente Leitura) — " + AppVersion.formatShort(), false);
+        this(owner, diagnosticsService, logger, null, List.of(), "N/A", null);
+    }
+
+    public HidDiagnosticsDialog(
+            JFrame owner,
+            HidDiagnosticsService diagnosticsService,
+            AppLogger logger,
+            AppSettings settings,
+            List<DeviceReading> driverStates,
+            String widgetBackendSummary,
+            I18n i18n
+    ) {
+        super(owner, (i18n != null ? i18n : new I18n()).t("diag.title", AppVersion.formatShort()), false);
         this.diagnosticsService = diagnosticsService;
         this.logger = logger;
+        this.settings = settings;
+        this.driverStates = driverStates != null ? List.copyOf(driverStates) : List.of();
+        this.widgetBackendSummary = widgetBackendSummary;
+        this.i18n = i18n != null ? i18n : new I18n();
+        this.exportZipButton.setText(this.i18n.t("diag.exportZip"));
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setLayout(new BorderLayout(10, 10));
         setPreferredSize(new Dimension(1080, 560));
@@ -73,8 +101,8 @@ public final class HidDiagnosticsDialog extends JDialog {
         if (logger != null) {
             JTabbedPane tabs = new JTabbedPane();
             tabs.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
-            tabs.addTab("Interfaces HID (Somente Leitura)", devicesTab);
-            tabs.addTab("Logs de Diagnóstico HID", buildLogsTab());
+            tabs.addTab(this.i18n.t("diag.tabInterfaces"), devicesTab);
+            tabs.addTab(this.i18n.t("diag.tabLogs"), buildLogsTab());
             add(tabs, BorderLayout.CENTER);
         } else {
             add(devicesTab, BorderLayout.CENTER);
@@ -123,10 +151,11 @@ public final class HidDiagnosticsDialog extends JDialog {
         bottom.add(statusLabel, BorderLayout.WEST);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
-        JButton closeButton = new JButton("Fechar");
+        JButton closeButton = new JButton(i18n.t("history.close"));
         buttons.add(refreshButton);
         buttons.add(copyButton);
         buttons.add(exportButton);
+        buttons.add(exportZipButton);
         buttons.add(closeButton);
         bottom.add(buttons, BorderLayout.EAST);
 
@@ -137,6 +166,7 @@ public final class HidDiagnosticsDialog extends JDialog {
         refreshButton.addActionListener(e -> loadDevicesAsync());
         copyButton.addActionListener(e -> copyReportToClipboard());
         exportButton.addActionListener(e -> exportReportToFile());
+        exportZipButton.addActionListener(e -> openSanitizedExportPreview());
         closeButton.addActionListener(e -> dispose());
 
         filterField.getDocument().addDocumentListener(new DocumentListener() {
@@ -249,6 +279,19 @@ public final class HidDiagnosticsDialog extends JDialog {
                 "Diagnóstico HID",
                 JOptionPane.INFORMATION_MESSAGE
         );
+    }
+
+    private void openSanitizedExportPreview() {
+        Map<String, String> bundle = new DiagnosticBundleExporter(
+                diagnosticsService,
+                settings != null ? settings : new AppSettings(),
+                logger,
+                driverStates,
+                widgetBackendSummary,
+                new DiagnosticSanitizer(),
+                allDevices
+        ).buildEntries();
+        new DiagnosticPreviewDialog(this, bundle, i18n).setVisible(true);
     }
 
     private void exportReportToFile() {

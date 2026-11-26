@@ -23,6 +23,17 @@ public final class QcyT13Bluetooth implements BatteryDevice {
     public static final String DISPLAY_NAME = "QCY T13";
     public static final String CONNECTION = "Bluetooth";
 
+    private static final DriverCapabilities CAPABILITIES = new DriverCapabilities(
+            TransportType.BLUETOOTH_PNP,
+            false,
+            false,
+            10,
+            ProtocolSafetyInfo.passiveOs(
+                    "Leitura passiva via propriedades SetupAPI/PnP do Windows (DEVPKEY_Bluetooth_Battery / PKEY_Devices_BatteryLife), sem conexões RFCOMM/GATT.",
+                    "https://github.com/joaoarebalo/Wireless-Device-Battery-Monitor-Fallen"
+            )
+    );
+
     private final BluetoothDeviceScanner scanner;
     private final QcyT13Config config;
     private final AppLogger logger;
@@ -81,6 +92,11 @@ public final class QcyT13Bluetooth implements BatteryDevice {
     @Override
     public boolean supportsBatteryQuery() {
         return true;
+    }
+
+    @Override
+    public DriverCapabilities getCapabilities() {
+        return CAPABILITIES;
     }
 
     @Override

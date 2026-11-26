@@ -1,5 +1,6 @@
 package br.com.wirelessbattery.config;
 
+import br.com.wirelessbattery.i18n.AppLanguage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -9,6 +10,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -18,6 +20,13 @@ import java.util.stream.Collectors;
  * Preferências persistentes do aplicativo salvas localmente em arquivo {@code settings.properties}.
  */
 public final class AppSettings {
+    public static final List<String> KNOWN_DEVICE_IDS = List.of(
+            "delux-m800-pro",
+            "akko-verge-s9",
+            "gamesir-cyclone-2",
+            "qcy-t13"
+    );
+
     private static final Path DEFAULT_PATH = Path.of(
             System.getProperty("user.home"), ".wireless-battery-java", "settings.properties"
     );
@@ -41,7 +50,19 @@ public final class AppSettings {
             "taskbarOffsetX",
             "windowX",
             "windowY",
-            "hiddenDeviceIds"
+            "hiddenDeviceIds",
+            "language",
+            "readOnlyHidMode",
+            "gameSirMonitoringEnabled",
+            "gameSirSafetyNoticeAcknowledged",
+            "ecoModeEnabled",
+            "historyEnabled",
+            "historyRetentionDays",
+            "autoCheckUpdates",
+            "lastUpdateCheckEpochMillis",
+            "cachedLatestVersion",
+            "cachedReleaseUrl",
+            "cachedReleaseNotes"
     );
 
     private final Path storagePath;
@@ -49,7 +70,7 @@ public final class AppSettings {
     private boolean startWithWindows = false;
     private boolean startMinimized = false;
     private boolean minimizeToTray = true;
-    private int pollIntervalSeconds = 20;
+    private int pollIntervalSeconds = 15;
     private boolean darkTheme = true;
     private boolean notificationsEnabled = true;
     private int lowBatteryThreshold = 20;
@@ -65,6 +86,25 @@ public final class AppSettings {
     private Integer windowX = null;
     private Integer windowY = null;
     private final Set<String> hiddenDeviceIds = new LinkedHashSet<>();
+
+    // v1.3.0 robustness & community preferences
+    private AppLanguage language = AppLanguage.SYSTEM;
+    private boolean readOnlyHidMode = false;
+    private boolean gameSirMonitoringEnabled = true;
+    private boolean gameSirSafetyNoticeAcknowledged = false;
+    private boolean ecoModeEnabled = true;
+    private boolean historyEnabled = true;
+    private int historyRetentionDays = 30;
+    private boolean autoCheckUpdates = false;
+    private long lastUpdateCheckEpochMillis = 0L;
+    private String cachedLatestVersion = "";
+    private String cachedReleaseUrl = "";
+    private String cachedReleaseNotes = "";
+
+    private final Map<String, Boolean> deviceAlertEnabled = new LinkedHashMap<>();
+    private final Map<String, Integer> deviceLowThreshold = new LinkedHashMap<>();
+    private final Map<String, Integer> deviceCriticalThreshold = new LinkedHashMap<>();
+    private final Map<String, Boolean> deviceSuppressWhenCharging = new LinkedHashMap<>();
 
     public AppSettings() {
         this(DEFAULT_PATH);
@@ -88,6 +128,7 @@ public final class AppSettings {
         } catch (IOException e) {
             return;
         }
+
         startWithWindows = parseBool(p, "startWithWindows", startWithWindows);
         startMinimized = parseBool(p, "startMinimized", startMinimized);
         minimizeToTray = parseBool(p, "minimizeToTray", minimizeToTray);
@@ -108,6 +149,19 @@ public final class AppSettings {
         windowX = parseOptionalInt(p, "windowX");
         windowY = parseOptionalInt(p, "windowY");
 
+        language = AppLanguage.fromCode(p.getProperty("language"));
+        readOnlyHidMode = parseBool(p, "readOnlyHidMode", readOnlyHidMode);
+        gameSirMonitoringEnabled = parseBool(p, "gameSirMonitoringEnabled", gameSirMonitoringEnabled);
+        gameSirSafetyNoticeAcknowledged = parseBool(p, "gameSirSafetyNoticeAcknowledged", gameSirSafetyNoticeAcknowledged);
+        ecoModeEnabled = parseBool(p, "ecoModeEnabled", ecoModeEnabled);
+        historyEnabled = parseBool(p, "historyEnabled", historyEnabled);
+        setHistoryRetentionDays(parseInt(p, "historyRetentionDays", historyRetentionDays));
+        autoCheckUpdates = parseBool(p, "autoCheckUpdates", autoCheckUpdates);
+        lastUpdateCheckEpochMillis = parseLong(p, "lastUpdateCheckEpochMillis", 0L);
+        cachedLatestVersion = safeString(p.getProperty("cachedLatestVersion"));
+        cachedReleaseUrl = safeString(p.getProperty("cachedReleaseUrl"));
+        cachedReleaseNotes = safeString(p.getProperty("cachedReleaseNotes"));
+
         hiddenDeviceIds.clear();
         String hidden = p.getProperty("hiddenDeviceIds", "");
         if (!hidden.isBlank()) {
@@ -117,11 +171,34 @@ public final class AppSettings {
                     .forEach(hiddenDeviceIds::add);
         }
 
+        deviceAlertEnabled.clear();
+        deviceLowThreshold.clear();
+        deviceCriticalThreshold.clear();
+        deviceSuppressWhenCharging.clear();
         extraProperties.clear();
+
         for (String name : p.stringPropertyNames()) {
-            if (!KNOWN_KEYS.contains(name)) {
+            if (name.startsWith("alert.")) {
+                parseAlertProperty(name, p.getProperty(name));
+            } else if (!KNOWN_KEYS.contains(name)) {
                 extraProperties.put(name, p.getProperty(name));
             }
+        }
+    }
+
+    private void parseAlertProperty(String key, String value) {
+        if (key.endsWith(".enabled")) {
+            String id = key.substring("alert.".length(), key.length() - ".enabled".length());
+            deviceAlertEnabled.put(id, Boolean.parseBoolean(value.trim()));
+        } else if (key.endsWith(".low")) {
+            String id = key.substring("alert.".length(), key.length() - ".low".length());
+            setDeviceLowThreshold(id, parseIntString(value, lowBatteryThreshold));
+        } else if (key.endsWith(".critical")) {
+            String id = key.substring("alert.".length(), key.length() - ".critical".length());
+            setDeviceCriticalThreshold(id, parseIntString(value, 10));
+        } else if (key.endsWith(".suppressCharging")) {
+            String id = key.substring("alert.".length(), key.length() - ".suppressCharging".length());
+            deviceSuppressWhenCharging.put(id, Boolean.parseBoolean(value.trim()));
         }
     }
 
@@ -157,6 +234,38 @@ public final class AppSettings {
             p.setProperty("windowY", Integer.toString(windowY));
         }
         p.setProperty("hiddenDeviceIds", hiddenDeviceIds.stream().collect(Collectors.joining(",")));
+
+        p.setProperty("language", language.getCode());
+        p.setProperty("readOnlyHidMode", Boolean.toString(readOnlyHidMode));
+        p.setProperty("gameSirMonitoringEnabled", Boolean.toString(gameSirMonitoringEnabled));
+        p.setProperty("gameSirSafetyNoticeAcknowledged", Boolean.toString(gameSirSafetyNoticeAcknowledged));
+        p.setProperty("ecoModeEnabled", Boolean.toString(ecoModeEnabled));
+        p.setProperty("historyEnabled", Boolean.toString(historyEnabled));
+        p.setProperty("historyRetentionDays", Integer.toString(historyRetentionDays));
+        p.setProperty("autoCheckUpdates", Boolean.toString(autoCheckUpdates));
+        p.setProperty("lastUpdateCheckEpochMillis", Long.toString(lastUpdateCheckEpochMillis));
+        if (!cachedLatestVersion.isEmpty()) {
+            p.setProperty("cachedLatestVersion", cachedLatestVersion);
+        }
+        if (!cachedReleaseUrl.isEmpty()) {
+            p.setProperty("cachedReleaseUrl", cachedReleaseUrl);
+        }
+        if (!cachedReleaseNotes.isEmpty()) {
+            p.setProperty("cachedReleaseNotes", cachedReleaseNotes);
+        }
+
+        for (Map.Entry<String, Boolean> e : deviceAlertEnabled.entrySet()) {
+            p.setProperty("alert." + e.getKey() + ".enabled", Boolean.toString(e.getValue()));
+        }
+        for (Map.Entry<String, Integer> e : deviceLowThreshold.entrySet()) {
+            p.setProperty("alert." + e.getKey() + ".low", Integer.toString(e.getValue()));
+        }
+        for (Map.Entry<String, Integer> e : deviceCriticalThreshold.entrySet()) {
+            p.setProperty("alert." + e.getKey() + ".critical", Integer.toString(e.getValue()));
+        }
+        for (Map.Entry<String, Boolean> e : deviceSuppressWhenCharging.entrySet()) {
+            p.setProperty("alert." + e.getKey() + ".suppressCharging", Boolean.toString(e.getValue()));
+        }
 
         try (OutputStream out = Files.newOutputStream(storagePath)) {
             p.store(out, "Wireless Battery Monitor - Configurações do Usuário");
@@ -257,16 +366,136 @@ public final class AppSettings {
         return Collections.unmodifiableSet(hiddenDeviceIds);
     }
 
+    public AppLanguage getLanguage() { return language; }
+    public void setLanguage(AppLanguage language) {
+        this.language = language != null ? language : AppLanguage.SYSTEM;
+    }
+
+    public boolean isReadOnlyHidMode() { return readOnlyHidMode; }
+    public void setReadOnlyHidMode(boolean readOnlyHidMode) { this.readOnlyHidMode = readOnlyHidMode; }
+
+    public boolean isGameSirMonitoringEnabled() { return gameSirMonitoringEnabled; }
+    public void setGameSirMonitoringEnabled(boolean enabled) { this.gameSirMonitoringEnabled = enabled; }
+
+    public boolean isGameSirSafetyNoticeAcknowledged() { return gameSirSafetyNoticeAcknowledged; }
+    public void setGameSirSafetyNoticeAcknowledged(boolean ack) { this.gameSirSafetyNoticeAcknowledged = ack; }
+
+    public boolean isEcoModeEnabled() { return ecoModeEnabled; }
+    public void setEcoModeEnabled(boolean ecoModeEnabled) { this.ecoModeEnabled = ecoModeEnabled; }
+
+    public boolean isHistoryEnabled() { return historyEnabled; }
+    public void setHistoryEnabled(boolean historyEnabled) { this.historyEnabled = historyEnabled; }
+
+    public int getHistoryRetentionDays() { return historyRetentionDays; }
+    public void setHistoryRetentionDays(int days) {
+        if (days <= 7) {
+            this.historyRetentionDays = 7;
+        } else if (days <= 30) {
+            this.historyRetentionDays = 30;
+        } else {
+            this.historyRetentionDays = 90;
+        }
+    }
+
+    public boolean isAutoCheckUpdates() { return autoCheckUpdates; }
+    public void setAutoCheckUpdates(boolean autoCheckUpdates) { this.autoCheckUpdates = autoCheckUpdates; }
+
+    public long getLastUpdateCheckEpochMillis() { return lastUpdateCheckEpochMillis; }
+    public void setLastUpdateCheckEpochMillis(long epochMillis) {
+        this.lastUpdateCheckEpochMillis = Math.max(0L, epochMillis);
+    }
+
+    public String getCachedLatestVersion() { return cachedLatestVersion; }
+    public void setCachedLatestVersion(String cachedLatestVersion) {
+        this.cachedLatestVersion = safeString(cachedLatestVersion);
+    }
+
+    public String getCachedReleaseUrl() { return cachedReleaseUrl; }
+    public void setCachedReleaseUrl(String cachedReleaseUrl) {
+        this.cachedReleaseUrl = safeString(cachedReleaseUrl);
+    }
+
+    public String getCachedReleaseNotes() { return cachedReleaseNotes; }
+    public void setCachedReleaseNotes(String cachedReleaseNotes) {
+        this.cachedReleaseNotes = safeString(cachedReleaseNotes);
+    }
+
+    public boolean isDeviceAlertEnabled(String deviceId) {
+        return deviceId == null ? notificationsEnabled : deviceAlertEnabled.getOrDefault(deviceId, true);
+    }
+
+    public void setDeviceAlertEnabled(String deviceId, boolean enabled) {
+        if (deviceId != null && !deviceId.isBlank()) {
+            deviceAlertEnabled.put(deviceId, enabled);
+        }
+    }
+
+    public int getDeviceLowThreshold(String deviceId) {
+        return deviceId == null ? lowBatteryThreshold : deviceLowThreshold.getOrDefault(deviceId, lowBatteryThreshold);
+    }
+
+    public void setDeviceLowThreshold(String deviceId, int threshold) {
+        if (deviceId != null && !deviceId.isBlank()) {
+            deviceLowThreshold.put(deviceId, Math.max(5, Math.min(50, threshold)));
+        }
+    }
+
+    public int getDeviceCriticalThreshold(String deviceId) {
+        int low = getDeviceLowThreshold(deviceId);
+        int raw = deviceId == null ? 10 : deviceCriticalThreshold.getOrDefault(deviceId, Math.min(10, low));
+        return Math.max(1, Math.min(low, raw));
+    }
+
+    public void setDeviceCriticalThreshold(String deviceId, int threshold) {
+        if (deviceId != null && !deviceId.isBlank()) {
+            int low = getDeviceLowThreshold(deviceId);
+            deviceCriticalThreshold.put(deviceId, Math.max(1, Math.min(low, threshold)));
+        }
+    }
+
+    public boolean isSuppressAlertWhenCharging(String deviceId) {
+        return deviceId == null ? true : deviceSuppressWhenCharging.getOrDefault(deviceId, true);
+    }
+
+    public void setSuppressAlertWhenCharging(String deviceId, boolean suppress) {
+        if (deviceId != null && !deviceId.isBlank()) {
+            deviceSuppressWhenCharging.put(deviceId, suppress);
+        }
+    }
+
+    public void resetAlertDefaults() {
+        notificationsEnabled = true;
+        lowBatteryThreshold = 20;
+        mediumBatteryThreshold = 50;
+        deviceAlertEnabled.clear();
+        deviceLowThreshold.clear();
+        deviceCriticalThreshold.clear();
+        deviceSuppressWhenCharging.clear();
+    }
+
     private static boolean parseBool(Properties p, String key, boolean def) {
         String v = p.getProperty(key);
         return v == null ? def : Boolean.parseBoolean(v.trim());
     }
 
     private static int parseInt(Properties p, String key, int def) {
-        String v = p.getProperty(key);
+        return parseIntString(p.getProperty(key), def);
+    }
+
+    private static int parseIntString(String v, int def) {
         if (v == null) return def;
         try {
             return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    private static long parseLong(Properties p, String key, long def) {
+        String v = p.getProperty(key);
+        if (v == null) return def;
+        try {
+            return Long.parseLong(v.trim());
         } catch (NumberFormatException e) {
             return def;
         }
@@ -280,6 +509,10 @@ public final class AppSettings {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    private static String safeString(String raw) {
+        return raw == null ? "" : raw.trim();
     }
 
     private static DisplayMode parseDisplayMode(String raw, DisplayMode def) {
